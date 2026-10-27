@@ -43,20 +43,20 @@
 }
 
 :root {
-  --primary: var(--color-blue-700);
-  --primary-foreground: var(--color-blue-50);
-  --sidebar-primary: var(--color-blue-600);
-  --sidebar-primary-foreground: var(--color-blue-50);
-  --chart-1: var(--color-blue-300);
-  --chart-2: var(--color-blue-500);
-  --chart-3: var(--color-blue-600);
-  --chart-4: var(--color-blue-700);
-  --chart-5: var(--color-blue-800);
+  --primary: #0d3340;
+  --primary-foreground: #f7f8f5;
+  --sidebar-primary: #0f9f9a;
+  --sidebar-primary-foreground: #ffffff;
+  --chart-1: #0f9f9a;
+  --chart-2: #f3a34b;
+  --chart-3: #0d3340;
+  --chart-4: #55d0bf;
+  --chart-5: #164a5b;
   --radius: 0.65rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.235 0.015 65);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.235 0.015 65);
+  --background: #f7f8f5;
+  --foreground: #0d3340;
+  --card: #ffffff;
+  --card-foreground: #0d3340;
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.235 0.015 65);
   --secondary: oklch(0.98 0.001 286.375);
@@ -79,8 +79,8 @@
 }
 
 .dark {
-  --primary: var(--color-blue-700);
-  --primary-foreground: var(--color-blue-50);
+  --primary: #0f9f9a;
+  --primary-foreground: #ffffff;
   --sidebar-primary: var(--color-blue-500);
   --sidebar-primary-foreground: var(--color-blue-50);
   --background: oklch(0.141 0.005 285.823);
@@ -119,6 +119,9 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: "IBM Plex Sans Arabic", "Noto Sans Arabic", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),

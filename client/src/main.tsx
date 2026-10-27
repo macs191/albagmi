@@ -8,6 +8,17 @@ import App from "./App";
 import { startLogin } from "./const";
 import "./index.css";
 
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(error => console.warn("[PWA] service worker unavailable", error));
+  });
+}
+
+window.addEventListener("beforeinstallprompt", event => {
+  event.preventDefault();
+  window.dispatchEvent(new CustomEvent("airbookinstallavailable", { detail: event }));
+});
+
 const queryClient = new QueryClient();
 
 const redirectToLoginIfUnauthorized = (error: unknown) => {
