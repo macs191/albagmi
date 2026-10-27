@@ -1,0 +1,3 @@
+import { searchFlights } from "../../server/duffel";
+import { airportCode, dateValue, flightInput, json } from "../_lib";
+export default async function handler(req: any, res: any) { const input = flightInput(req.body || {}); if (!airportCode(input.origin) || !airportCode(input.destination) || input.origin === input.destination || !dateValue(input.departureDate) || (input.returnDate && (!dateValue(input.returnDate) || input.returnDate < input.departureDate))) return json(res, 400, { message: "أدخل رموز مطارات صحيحة وتواريخ بصيغة صحيحة." }); try { return res.status(200).json(await searchFlights(input)); } catch { return json(res, 502, { message: "تعذر الحصول على الرحلات الآن." }); } }

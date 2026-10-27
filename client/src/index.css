@@ -178,3 +178,26 @@
     }
   }
 }
+
+@layer components {
+  html.dark body {
+    background: #0b1d24;
+    color: #edf7f5;
+  }
+
+  html.dark .bg-white {
+    background-color: #132c35 !important;
+  }
+
+  html.dark [class~="bg-[#f7f8f5]"] {
+    background-color: #0b1d24 !important;
+  }
+
+  html.dark [class~="text-[#123d4c]"] {
+    color: #edf7f5 !important;
+  }
+
+  html.dark [class~="border-[#123d4c]/10"] {
+    border-color: rgb(237 247 245 / 0.14) !important;
+  }
+}

@@ -1,0 +1,3 @@
+import { repriceOffer } from "../../server/duffel";
+import { airportCode, dateValue, flightInput, json } from "../_lib";
+export default async function handler(req: any, res: any) { const input = flightInput(req.body || {}); const offerId = typeof req.body?.offerId === "string" ? req.body.offerId : ""; if (!offerId || !airportCode(input.origin) || !airportCode(input.destination) || !dateValue(input.departureDate)) return json(res, 400, { message: "بيانات العرض غير مكتملة." }); try { return res.status(200).json(await repriceOffer(offerId, input)); } catch { return json(res, 502, { message: "انتهت صلاحية العرض أو تعذر التحقق من سعره." }); } }
