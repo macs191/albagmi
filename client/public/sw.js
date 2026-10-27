@@ -1,4 +1,4 @@
-const CACHE_NAME = "airbook-shell-v1";
+const CACHE_NAME = "albagmi-shell-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/icons/icon-192.svg", "/icons/icon-512.svg"];
 
 self.addEventListener("install", event => {
