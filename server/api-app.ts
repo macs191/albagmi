@@ -1,0 +1,35 @@
+import express from "express";
+import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { registerOAuthRoutes } from "./_core/oauth";
+import { publicPlatformScript } from "./_core/publicConfig";
+import { appRouter } from "./routers";
+import { createContext } from "./_core/context";
+import { bookOffer, repriceOffer, searchFlights, type NormalizedOffer } from "./duffel";
+import { promotions, resolveLocation, searchLocations } from "./saudi";
+import { searchStays } from "./duffel-stays";
+import { searchCars } from "./duffel-cars";
+
+const airportCode = (value: unknown) => typeof value === "string" && /^[A-Za-z]{3}$/.test(value.trim());
+const dateValue = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+const boundedInt = (value: unknown, fallback: number, min: number, max: number) => { const parsed = Number(value); return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.trunc(parsed))) : fallback; };
+const airportOrSearch = (value: unknown) => { const text = String(value || "").trim(); if (/^[A-Za-z]{3}$/.test(text)) return text.toUpperCase(); return resolveLocation(text)?.code || text.toUpperCase(); };
+const searchInput = (body: any) => ({ origin: airportOrSearch(body?.originCode || body?.origin), destination: airportOrSearch(body?.destinationCode || body?.destination), departureDate: String(body?.departureDate || ""), returnDate: body?.roundTrip === false || !body?.returnDate ? undefined : String(body.returnDate), adults: boundedInt(body?.adults, 1, 1, 9), children: boundedInt(body?.children, 0, 0, 8), infants: boundedInt(body?.infants, 0, 0, 4), cabinClass: ["economy", "premium_economy", "business", "first"].includes(body?.cabinClass) ? body.cabinClass : "economy" } as const);
+
+export function buildApiApp() {
+  const app = express();
+  app.use(express.json({ limit: "10mb" }));
+  app.use(express.urlencoded({ limit: "10mb", extended: true }));
+  app.get("/api/health", (_req, res) => res.json({ status: "ok", service: "albagmi-api" }));
+  app.get("/api/platform/config.js", (_req, res) => res.set("Cache-Control", "no-store").type("application/javascript").send(publicPlatformScript()));
+  app.get("/api/locations", (req, res) => res.json({ locations: searchLocations(String(req.query.q || ""), 10) }));
+  app.get("/api/promotions", (_req, res) => res.json({ promotions }));
+  app.get("/api/admin/overview", (_req, res) => res.json({ brand: "البقــمـي", metrics: [{ label: "عمليات البحث اليوم", value: "1,248", change: "+18%" }, { label: "الحجوزات المؤكدة", value: "186", change: "+12%" }, { label: "قيمة المبيعات", value: "284,650 ر.س", change: "+21%" }, { label: "نسبة التحويل", value: "14.9%", change: "+2.4%" }], integrations: [{ name: "Duffel API", status: process.env.DUFFEL_API_TOKEN ? "مهيأ" : "Sandbox" }, { name: "بوابة الدفع", status: "Sandbox" }, { name: "قاعدة البيانات", status: process.env.DATABASE_URL ? "متصلة" : "محلية" }], promotions }));
+  app.post("/api/flights/search", async (req, res) => { const input = searchInput(req.body); if (!airportCode(input.origin) || !airportCode(input.destination) || input.origin === input.destination || !dateValue(input.departureDate) || (input.returnDate && (!dateValue(input.returnDate) || input.returnDate < input.departureDate))) return res.status(400).json({ message: "أدخل رموز مطارات صحيحة وتواريخ بصيغة صحيحة." }); try { return res.json(await searchFlights(input)); } catch (error) { console.error("[Flights] search failed", error); return res.status(502).json({ message: "تعذر الحصول على الرحلات الآن." }); } });
+  app.post("/api/flights/reprice", async (req, res) => { const input = searchInput(req.body); const offerId = typeof req.body?.offerId === "string" ? req.body.offerId : ""; if (!offerId || !airportCode(input.origin) || !airportCode(input.destination) || !dateValue(input.departureDate)) return res.status(400).json({ message: "بيانات العرض غير مكتملة." }); try { return res.json(await repriceOffer(offerId, input)); } catch (error) { console.error("[Flights] reprice failed", error); return res.status(502).json({ message: "انتهت صلاحية العرض أو تعذر التحقق من سعره." }); } });
+  app.post("/api/flights/book", async (req, res) => { const input = searchInput(req.body); const offerId = typeof req.body?.offerId === "string" ? req.body.offerId : ""; const passengers = Array.isArray(req.body?.passengers) ? req.body.passengers : []; if (!offerId || !passengers.length || !airportCode(input.origin) || !airportCode(input.destination) || !dateValue(input.departureDate)) return res.status(400).json({ message: "اختر عرضًا وأدخل بيانات مسافر واحدة على الأقل." }); try { const repriced = await repriceOffer(offerId, input); return res.json(await bookOffer(repriced.offer as NormalizedOffer, passengers)); } catch (error) { console.error("[Flights] booking failed", error); return res.status(502).json({ message: "تعذر إنشاء الحجز. لم يتم تأكيد التذكرة." }); } });
+  app.post("/api/stays/search", async (req, res) => { const checkIn = String(req.body?.checkIn || ""); const checkOut = String(req.body?.checkOut || ""); if (!dateValue(checkIn) || !dateValue(checkOut) || checkOut <= checkIn) return res.status(400).json({ message: "أدخل تاريخ وصول ومغادرة صحيحين." }); try { return res.json(await searchStays({ cityCode: airportOrSearch(req.body?.cityCode || req.body?.city || "RUH"), checkIn, checkOut, rooms: boundedInt(req.body?.rooms, 1, 1, 8), adults: boundedInt(req.body?.adults, 2, 1, 12), children: boundedInt(req.body?.children, 0, 0, 8), freeCancellationOnly: Boolean(req.body?.freeCancellationOnly) })); } catch (error) { console.error("[Stays] search failed", error); return res.status(502).json({ message: "تعذر الحصول على الفنادق الآن." }); } });
+  app.post("/api/cars/search", async (req, res) => { const pickupDate = String(req.body?.pickupDate || ""); const dropoffDate = String(req.body?.dropoffDate || ""); if (!dateValue(pickupDate) || !dateValue(dropoffDate) || dropoffDate <= pickupDate) return res.status(400).json({ message: "أدخل تواريخ استلام وتسليم صحيحة." }); try { return res.json(await searchCars({ cityCode: airportOrSearch(req.body?.cityCode || "RUH"), pickupDate, dropoffDate, pickupTime: String(req.body?.pickupTime || "10:00"), dropoffTime: String(req.body?.dropoffTime || "10:00"), driverAge: boundedInt(req.body?.driverAge, 30, 21, 75) })); } catch (error) { console.error("[Cars] search failed", error); return res.status(502).json({ message: "تعذر الحصول على السيارات الآن." }); } });
+  registerOAuthRoutes(app);
+  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
+  return app;
+}
