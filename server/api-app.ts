@@ -1,9 +1,5 @@
 import express from "express";
-import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./_core/oauth";
 import { publicPlatformScript } from "./_core/publicConfig";
-import { appRouter } from "./routers";
-import { createContext } from "./_core/context";
 import { bookOffer, repriceOffer, searchFlights, type NormalizedOffer } from "./duffel";
 import { promotions, resolveLocation, searchLocations } from "./saudi";
 import { searchStays } from "./duffel-stays";
@@ -29,7 +25,5 @@ export function buildApiApp() {
   app.post("/api/flights/book", async (req, res) => { const input = searchInput(req.body); const offerId = typeof req.body?.offerId === "string" ? req.body.offerId : ""; const passengers = Array.isArray(req.body?.passengers) ? req.body.passengers : []; if (!offerId || !passengers.length || !airportCode(input.origin) || !airportCode(input.destination) || !dateValue(input.departureDate)) return res.status(400).json({ message: "اختر عرضًا وأدخل بيانات مسافر واحدة على الأقل." }); try { const repriced = await repriceOffer(offerId, input); return res.json(await bookOffer(repriced.offer as NormalizedOffer, passengers)); } catch (error) { console.error("[Flights] booking failed", error); return res.status(502).json({ message: "تعذر إنشاء الحجز. لم يتم تأكيد التذكرة." }); } });
   app.post("/api/stays/search", async (req, res) => { const checkIn = String(req.body?.checkIn || ""); const checkOut = String(req.body?.checkOut || ""); if (!dateValue(checkIn) || !dateValue(checkOut) || checkOut <= checkIn) return res.status(400).json({ message: "أدخل تاريخ وصول ومغادرة صحيحين." }); try { return res.json(await searchStays({ cityCode: airportOrSearch(req.body?.cityCode || req.body?.city || "RUH"), checkIn, checkOut, rooms: boundedInt(req.body?.rooms, 1, 1, 8), adults: boundedInt(req.body?.adults, 2, 1, 12), children: boundedInt(req.body?.children, 0, 0, 8), freeCancellationOnly: Boolean(req.body?.freeCancellationOnly) })); } catch (error) { console.error("[Stays] search failed", error); return res.status(502).json({ message: "تعذر الحصول على الفنادق الآن." }); } });
   app.post("/api/cars/search", async (req, res) => { const pickupDate = String(req.body?.pickupDate || ""); const dropoffDate = String(req.body?.dropoffDate || ""); if (!dateValue(pickupDate) || !dateValue(dropoffDate) || dropoffDate <= pickupDate) return res.status(400).json({ message: "أدخل تواريخ استلام وتسليم صحيحة." }); try { return res.json(await searchCars({ cityCode: airportOrSearch(req.body?.cityCode || "RUH"), pickupDate, dropoffDate, pickupTime: String(req.body?.pickupTime || "10:00"), dropoffTime: String(req.body?.dropoffTime || "10:00"), driverAge: boundedInt(req.body?.driverAge, 30, 21, 75) })); } catch (error) { console.error("[Cars] search failed", error); return res.status(502).json({ message: "تعذر الحصول على السيارات الآن." }); } });
-  registerOAuthRoutes(app);
-  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
   return app;
 }
