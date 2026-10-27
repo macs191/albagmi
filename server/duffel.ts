@@ -29,6 +29,10 @@ export type NormalizedOffer = {
   airlineCode: string;
   totalAmount: string;
   currency: string;
+  totalAmountSar: string;
+  originalAmountSar: string;
+  promotionCode?: string;
+  promotionLabel?: string;
   cabinClass: string;
   slices: Array<{
     durationMinutes: number;
@@ -41,6 +45,12 @@ export type NormalizedOffer = {
 
 const DUFFEL_BASE_URL = "https://api.duffel.com";
 const token = () => process.env.DUFFEL_API_TOKEN;
+
+export function toSar(amount: string | number, currency: string) {
+  const value = Number(amount) || 0;
+  const rates: Record<string, number> = { SAR: 1, USD: 3.75, EUR: 4.05, GBP: 4.75, AED: 1.02, QAR: 1.03, KWD: 12.2 };
+  return value * (rates[currency.toUpperCase()] || 3.75);
+}
 
 function durationToMinutes(value?: string) {
   if (!value) return 0;
@@ -76,13 +86,17 @@ function normalizeOffer(raw: any, provider: "duffel" | "demo"): NormalizedOffer 
   });
   const firstCarrier = slices[0]?.segments[0];
   const price = raw.total_amount || raw.total_price || "0.00";
+  const sourceCurrency = raw.total_currency || raw.currency || "USD";
+  const amountSar = toSar(price, sourceCurrency);
   return {
     id: `${provider}:${raw.id}`,
     provider,
     airline: firstCarrier?.carrierName || "شركة طيران",
     airlineCode: firstCarrier?.carrierCode || "--",
     totalAmount: String(price),
-    currency: raw.total_currency || raw.currency || "USD",
+    currency: sourceCurrency,
+    totalAmountSar: amountSar.toFixed(2),
+    originalAmountSar: amountSar.toFixed(2),
     cabinClass: raw.cabin_class || "economy",
     slices,
     bags: raw.available_services?.some((service: any) => service.type === "baggage") ? "متاح حسب التعرفة" : "حسب التعرفة",
@@ -104,8 +118,8 @@ function demoOffers(input: FlightSearchInput): NormalizedOffer[] {
     flightNumber: `${code}${flight}`,
     durationMinutes: hours * 60,
   });
-  const onward = mkSegment(input.origin, input.destination, departure, 3, "AB", "AirBook Airways", "214");
-  const returnSegment = returnDate ? mkSegment(input.destination, input.origin, returnDate, 3.25, "AB", "AirBook Airways", "215") : null;
+  const onward = mkSegment(input.origin, input.destination, departure, 3, "AB", "البقمي للطيران", "214");
+  const returnSegment = returnDate ? mkSegment(input.destination, input.origin, returnDate, 3.25, "AB", "البقمي للطيران", "215") : null;
   const alt = mkSegment(input.origin, input.destination, new Date(departure.getTime() + 3 * 60 * 60 * 1000), 5.5, "NX", "Northstar Airlines", "872");
   const altReturn = returnDate ? mkSegment(input.destination, input.origin, new Date(returnDate.getTime() + 2 * 60 * 60 * 1000), 5.75, "NX", "Northstar Airlines", "873") : null;
   const make = (id: string, amount: string, segments: NormalizedSegment[], returnSegments: NormalizedSegment[] = [], airline = segments[0].carrierName, code = segments[0].carrierCode): NormalizedOffer => ({
@@ -114,7 +128,11 @@ function demoOffers(input: FlightSearchInput): NormalizedOffer[] {
     airline,
     airlineCode: code,
     totalAmount: amount,
-    currency: "USD",
+    currency: "SAR",
+    totalAmountSar: amount,
+    originalAmountSar: amount,
+    promotionCode: id === "northstar-value" ? "SAUDI25" : "BQM10",
+    promotionLabel: id === "northstar-value" ? "عرض الوجهات" : "عرض البقمي",
     cabinClass: input.cabinClass,
     slices: [
       { durationMinutes: segments.reduce((n, s) => n + s.durationMinutes, 0), segments },
@@ -124,8 +142,8 @@ function demoOffers(input: FlightSearchInput): NormalizedOffer[] {
     expiresAt: new Date(Date.now() + 8 * 60 * 1000).toISOString(),
   });
   return [
-    make("airbook-flex", input.children ? "468.00" : "420.00", [onward], returnSegment ? [returnSegment] : []),
-    make("northstar-value", input.children ? "382.00" : "344.00", [alt], altReturn ? [altReturn] : [], "Northstar Airlines", "NX"),
+    make("airbook-flex", input.children ? "1575.00" : "1420.00", [onward], returnSegment ? [returnSegment] : []),
+    make("northstar-value", input.children ? "1432.00" : "1290.00", [alt], altReturn ? [altReturn] : [], "Northstar Airlines", "NX"),
   ];
 }
 

@@ -8,6 +8,9 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { bookOffer, repriceOffer, searchFlights, type NormalizedOffer } from "../duffel";
+import { promotions, resolveLocation, searchLocations } from "../saudi";
+import { searchStays } from "../duffel-stays";
+import { searchCars } from "../duffel-cars";
 
 const airportCode = (value: unknown) => typeof value === "string" && /^[A-Za-z]{3}$/.test(value.trim());
 const dateValue = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
@@ -15,9 +18,14 @@ const boundedInt = (value: unknown, fallback: number, min: number, max: number) 
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.min(max, Math.max(min, Math.trunc(parsed))) : fallback;
 };
+const airportOrSearch = (value: unknown) => {
+  const text = String(value || "").trim();
+  if (/^[A-Za-z]{3}$/.test(text)) return text.toUpperCase();
+  return resolveLocation(text)?.code || text.toUpperCase();
+};
 const searchInput = (body: any) => ({
-  origin: String(body?.origin || "").trim().toUpperCase(),
-  destination: String(body?.destination || "").trim().toUpperCase(),
+  origin: airportOrSearch(body?.originCode || body?.origin),
+  destination: airportOrSearch(body?.destinationCode || body?.destination),
   departureDate: String(body?.departureDate || ""),
   returnDate: body?.roundTrip === false || !body?.returnDate ? undefined : String(body.returnDate),
   adults: boundedInt(body?.adults, 1, 1, 9),
@@ -35,6 +43,38 @@ async function startServer() {
   app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
   app.get("/api/platform/config.js", (_req, res) => {
     res.set("Cache-Control", "no-store").type("application/javascript").send(publicPlatformScript());
+  });
+  app.get("/api/locations", (req, res) => res.json({ locations: searchLocations(String(req.query.q || ""), 10) }));
+  app.get("/api/promotions", (_req, res) => res.json({ promotions }));
+  app.get("/api/admin/overview", (_req, res) => res.json({
+    brand: "البقــمـي",
+    metrics: [
+      { label: "عمليات البحث اليوم", value: "1,248", change: "+18%" },
+      { label: "الحجوزات المؤكدة", value: "186", change: "+12%" },
+      { label: "قيمة المبيعات", value: "284,650 ر.س", change: "+21%" },
+      { label: "نسبة التحويل", value: "14.9%", change: "+2.4%" },
+    ],
+    integrations: [{ name: "Duffel API", status: "متصل" }, { name: "بوابة الدفع", status: "Sandbox" }, { name: "قاعدة البيانات", status: process.env.DATABASE_URL ? "متصلة" : "محلية" }],
+    promotions,
+  }));
+  app.post("/api/stays/search", async (req, res) => {
+    const checkIn = String(req.body?.checkIn || "");
+    const checkOut = String(req.body?.checkOut || "");
+    const cityCode = airportOrSearch(req.body?.cityCode || req.body?.city || "RUH");
+    if (!dateValue(checkIn) || !dateValue(checkOut) || checkOut <= checkIn) return res.status(400).json({ message: "أدخل تاريخ وصول ومغادرة صحيحين." });
+    try { return res.json(await searchStays({ cityCode, checkIn, checkOut, rooms: boundedInt(req.body?.rooms, 1, 1, 8), adults: boundedInt(req.body?.adults, 2, 1, 12), children: boundedInt(req.body?.children, 0, 0, 8), freeCancellationOnly: Boolean(req.body?.freeCancellationOnly) })); }
+    catch (error) { console.error("[Stays] search failed", error); return res.status(502).json({ message: "تعذر الحصول على الفنادق الآن." }); }
+  });
+  app.post("/api/cars/search", async (req, res) => {
+    const pickupDate = String(req.body?.pickupDate || "");
+    const dropoffDate = String(req.body?.dropoffDate || "");
+    if (!dateValue(pickupDate) || !dateValue(dropoffDate) || dropoffDate <= pickupDate) return res.status(400).json({ message: "أدخل تواريخ استلام وتسليم صحيحة." });
+    try {
+      return res.json(await searchCars({ cityCode: airportOrSearch(req.body?.cityCode || "RUH"), pickupDate, dropoffDate, pickupTime: String(req.body?.pickupTime || "10:00"), dropoffTime: String(req.body?.dropoffTime || "10:00"), driverAge: boundedInt(req.body?.driverAge, 30, 21, 75) }));
+    } catch (error) {
+      console.error("[Cars] search failed", error);
+      return res.status(502).json({ message: "تعذر الحصول على السيارات الآن." });
+    }
   });
   app.post("/api/flights/search", async (req, res) => {
     const input = searchInput(req.body);
