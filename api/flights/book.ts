@@ -1,2 +1,0 @@
-import { randomBytes } from "node:crypto";
-export default function handler(req: any, res: any) { if (!req.body?.offerId || !Array.isArray(req.body?.passengers) || !req.body.passengers.length) return res.status(400).json({ message: "اختر عرضًا وأدخل بيانات المسافر." }); return res.status(200).json({ demo: true, bookingReference: `BQM-${randomBytes(3).toString("hex").toUpperCase()}`, status: "pending_demo", notice: "تم إنشاء حجز تجريبي. لا توجد تذكرة أو عملية دفع حقيقية." }); }

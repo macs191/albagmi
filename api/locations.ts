@@ -1,5 +1,0 @@
-const locations = [
-  ["RUH", "الرياض", "مطار الملك خالد الدولي", "السعودية"], ["JED", "جدة", "مطار الملك عبدالعزيز الدولي", "السعودية"], ["DMM", "الدمام", "مطار الملك فهد الدولي", "السعودية"], ["MED", "المدينة المنورة", "مطار الأمير محمد بن عبدالعزيز", "السعودية"], ["AHB", "أبها", "مطار أبها الدولي", "السعودية"], ["TIF", "الطائف", "مطار الطائف الدولي", "السعودية"], ["DXB", "دبي", "مطار دبي الدولي", "الإمارات"], ["DOH", "الدوحة", "مطار حمد الدولي", "قطر"], ["CAI", "القاهرة", "مطار القاهرة الدولي", "مصر"], ["IST", "إسطنبول", "مطار إسطنبول", "تركيا"], ["LHR", "لندن", "مطار هيثرو", "المملكة المتحدة"],
-].map(([code, city, airport, country]) => ({ code, city, airport, country, aliases: [] }));
-function normal(value: string) { return value.toLowerCase().trim().replace(/[إأآا]/g, "ا").replace(/ى/g, "ي").replace(/ة/g, "ه"); }
-export default function handler(req: any, res: any) { const q = normal(String(req.query?.q || "")); const result = (q ? locations.filter(item => [item.code, item.city, item.airport, item.country].some(value => normal(value).includes(q))) : locations.slice(0, 6)).slice(0, 10); return res.status(200).json({ locations: result }); }

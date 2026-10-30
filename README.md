@@ -1,14 +1,28 @@
-# البقــمـي — حجز رحلات الطيران
+# Service Hub Desktop
 
-React / Express / tRPC / Drizzle starter, adapted from the Sandbox web-db-user template.
+تطبيق عربي بواجهة سطح مكتب لإدارة مواقع الخدمات ومبيعات ومصروفات المكتب. البيانات محفوظة محليًا في الجهاز عبر Local Storage، ويمكن تغليفه كتطبيق Windows باستخدام Electron.
 
-- `pnpm dev`: development server; honors `PORT` (default 3000).
-- `pnpm build` / `pnpm start`: build and serve `dist/index.js` and `dist/public/`.
-- `pnpm db:migrate`: apply checked-in migrations. `pnpm db:push`: generate and apply new schema changes.
-- `pnpm check` / `pnpm test`: types and application tests.
+## التشغيل أثناء التطوير
 
-Start with the Webdev skill's default-template guide. Platform login, storage, payments and service contracts live in its shared references; read the relevant capability before extending its helper.
+```bash
+pnpm install
+pnpm dev
+```
 
-`server/_core/publicConfig.ts` exposes only named public runtime values. Private keys stay server-side. The platform serves managed `/manus-storage/` assets; the application does not register a second proxy.
+## تشغيل نسخة Electron المحلية
 
-Platform configuration is readable and editable through `webdev.config`. Default settings are initial values, not enforced constraints. The agent may modify the files, commands and configuration or follow the flexible guide for another stack.
+```bash
+pnpm desktop
+```
+
+تفتح الكروت مواقع الخدمات داخل نوافذ Electron مستقلة من دون شريط رابط. جلسة المواقع محفوظة عبر Electron، والتنزيلات تذهب إلى مجلد Downloads في الجهاز.
+
+## الوظائف الموجودة
+
+- واجهة رئيسية عربية RTL بكروت تعرض صورة الموقع واسمه.
+- بحث وتصنيفات ومفضلة للمواقع.
+- إعدادات محمية بكلمة مرور المطور المحددة في المتطلبات.
+- إضافة وتعديل وحذف المواقع، مع صورة من رابط أو ملف محلي.
+- تغيير اسم المكتب أو المؤسسة.
+- تسجيل المبيعات والمصروفات مع وقت تلقائي.
+- تصفية حسب اليوم وحساب إجمالي المبيعات والمصروفات وصافي اليوم.

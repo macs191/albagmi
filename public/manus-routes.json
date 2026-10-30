@@ -1,0 +1,7 @@
+{
+  "routes": [
+    {"path":"/","title":"الرئيسية"},
+    {"path":"/sales","title":"المبيعات"},
+    {"path":"/settings","title":"الإعدادات"}
+  ]
+}
