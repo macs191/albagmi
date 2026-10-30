@@ -162,7 +162,12 @@ function recordLoginFailure(key) {
 async function supabaseFetch(path, options = {}, useService = false) {
   const base = env('SUPABASE_URL').replace(/\/+$/, '');
   const key = useService ? env('SUPABASE_SERVICE_ROLE_KEY') : env('SUPABASE_ANON_KEY');
-  const headers = { apikey: key, 'Content-Type': 'application/json', ...options.headers };
+  const headers = {
+    apikey: key,
+    ...(useService ? { Authorization: `Bearer ${key}` } : {}),
+    'Content-Type': 'application/json',
+    ...options.headers,
+  };
   const response = await fetch(`${base}${path}`, { ...options, headers });
   const text = await response.text();
   let data = null;

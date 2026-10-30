@@ -82,10 +82,13 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
   const original = snapshotEnv();
   setTestEnv();
   try {
-    const response = await withMockFetch(async (url) => {
+    const response = await withMockFetch(async (url, options = {}) => {
       if (String(url).endsWith('/auth/v1/settings')) return new Response('{}', { status: 200 });
-      if (String(url).includes('/rest/v1/albagmi_accounts?select=id&limit=1')) return new Response('[]', { status: 200 });
-      if (String(url).includes('/rest/v1/albagmi_user_data?select=user_id&limit=1')) return new Response('[]', { status: 200 });
+      if (String(url).includes('/rest/v1/albagmi_accounts?select=id&limit=1') || String(url).includes('/rest/v1/albagmi_user_data?select=user_id&limit=1')) {
+        assert.equal(options.headers?.apikey, 'test-service-role-key');
+        assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
+        return new Response('[]', { status: 200 });
+      }
       throw new Error(`Unexpected test URL: ${url}`);
     }, () => callApi('GET', '/api/health'));
     assert.equal(response.statusCode, 200);
