@@ -221,3 +221,45 @@ h3 { margin-bottom: 8px; font-size: 18px; }
   .viewer-title strong { font-size: 12px; }
   .toast { right: 16px; bottom: 16px; left: 16px; text-align: center; }
 }
+
+
+/* Account access and subscription controls */
+.auth-screen, .admin-screen { min-height: 100vh; padding: 36px 20px; direction: rtl; }
+.auth-screen { display: grid; place-items: center; background: radial-gradient(circle at 18% 15%, rgba(85,214,173,.13), transparent 26rem), var(--bg); }
+.auth-card { width: min(100%, 450px); padding: 34px; background: linear-gradient(145deg, rgba(16,53,58,.96), rgba(8,34,38,.97)); border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow); }
+.auth-mark { margin-bottom: 25px; }
+.auth-card h1 { font-size: 30px; }
+.auth-form { display: grid; gap: 15px; margin-top: 25px; }
+.auth-form label, .admin-form label { display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
+.auth-form input, .auth-form select, .admin-form input, .renew-form input { width: 100%; min-height: 43px; padding: 10px 12px; color: var(--text); background: rgba(3,24,27,.5); border: 1px solid var(--line); border-radius: 9px; outline: 0; }
+.auth-form select { color-scheme: dark; }
+.auth-form input:focus, .auth-form select:focus, .admin-form input:focus, .renew-form input:focus { border-color: rgba(85,214,173,.65); }
+.auth-footnote { display: block; margin-top: 18px; color: var(--muted-2); line-height: 1.8; }
+.form-alert { margin-top: 18px; padding: 11px 13px; color: #ffe7c6; background: rgba(245,190,112,.11); border: 1px solid rgba(245,190,112,.3); border-radius: 10px; font-size: 12px; line-height: 1.8; }
+.subscription-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; padding: 14px 16px; color: #ffe5b9; background: rgba(245,190,112,.1); border: 1px solid rgba(245,190,112,.36); border-right: 4px solid var(--warning); border-radius: 12px; font-size: 12px; line-height: 1.8; }
+.subscription-banner strong { white-space: nowrap; }
+.admin-screen { width: min(100%, 1180px); margin-inline: auto; }
+.admin-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin: 15px 0 30px; }
+.admin-header h1 { margin-bottom: 10px; }
+.admin-create, .admin-list { margin-bottom: 16px; }
+.admin-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.admin-form .primary-btn { grid-column: 1 / -1; }
+.account-list { display: grid; gap: 8px; }
+.account-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 0; border-bottom: 1px solid var(--line); }
+.account-row:last-child { border-bottom: 0; }
+.account-details { display: grid; gap: 5px; min-width: 0; }
+.account-details strong { color: var(--text); }
+.account-details span, .account-details small { color: var(--muted); font-size: 11px; }
+.renew-form { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.renew-form input { width: 88px; }
+@media (max-width: 680px) {
+  .auth-screen, .admin-screen { padding: 20px 14px; }
+  .auth-card { padding: 25px 19px; }
+  .admin-header { align-items: stretch; flex-direction: column; }
+  .admin-form { grid-template-columns: 1fr; }
+  .admin-form .primary-btn { grid-column: auto; }
+  .account-row { align-items: stretch; flex-direction: column; }
+  .renew-form { width: 100%; }
+  .renew-form input { flex: 0 0 88px; }
+  .subscription-banner { align-items: flex-start; flex-direction: column; gap: 4px; }
+}

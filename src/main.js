@@ -1,7 +1,8 @@
 import './styles.css';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
-const DEVELOPER_PASSWORD = '171002';
+const SESSION_KEY = 'albagmi-session-v1';
+const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const todayKey = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -27,6 +28,9 @@ const initialState = {
 };
 
 let state = loadState();
+let authSession = loadSession();
+let syncTimer;
+let sessionCheckTimer;
 let currentView = getViewFromHash();
 let currentSite = null;
 let settingsUnlocked = false;
@@ -35,6 +39,100 @@ let categoryFilter = 'الكل';
 let selectedSalesDate = todayKey();
 let editingSiteId = null;
 let toastTimer;
+
+function loadSession() {
+  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch { return null; }
+}
+
+function apiUrl(path) {
+  const base = API_BASE_URL || (window.location.protocol === 'file:' ? '' : window.location.origin);
+  if (!base) throw new Error('نسخة البرنامج تحتاج رابط API المنشور على Vercel داخل إعدادات البناء.');
+  return `${base}/api/${path.replace(/^\//, '')}`;
+}
+
+async function apiRequest(path, { method = 'GET', body, token = authSession?.token, retryAuth = true } = {}) {
+  let response;
+  try {
+    response = await fetch(apiUrl(path), {
+      method,
+      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    });
+  } catch (error) {
+    throw new Error(error?.message || 'تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت وإعدادات Vercel.');
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(result.message || result.error || 'تعذر تنفيذ الطلب.');
+    error.status = response.status;
+    error.code = result.code || result.error;
+    error.details = result;
+    if (response.status === 401 && retryAuth && authSession?.role === 'client' && path !== 'refresh' && authSession.refreshToken) {
+      try {
+        const refreshed = await apiRequest('refresh', { method: 'POST', token: null, body: { refreshToken: authSession.refreshToken }, retryAuth: false });
+        authSession = { ...authSession, ...refreshed, account: { ...authSession.account, ...refreshed.account, ...(refreshed.subscription || {}) } };
+        saveSession(authSession);
+        return apiRequest(path, { method, body, token: authSession.token, retryAuth: false });
+      } catch (refreshError) {
+        if (refreshError.code === 'subscription_locked') throw refreshError;
+      }
+    }
+    throw error;
+  }
+  return result;
+}
+
+function saveSession(session) {
+  authSession = session;
+  if (session) sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  else sessionStorage.removeItem(SESSION_KEY);
+}
+
+function applyAccountState(accountState) {
+  const saved = accountState?.appState || accountState?.app_state || accountState?.state || accountState;
+  if (saved && typeof saved === 'object' && !Array.isArray(saved) && ('sites' in saved || 'officeName' in saved)) {
+    state = {
+      ...structuredClone(initialState),
+      ...saved,
+      officeName: authSession?.account?.officeName || authSession?.account?.office_name || saved.officeName || initialState.officeName,
+      sites: Array.isArray(saved.sites) ? saved.sites : structuredClone(initialState.sites),
+      transactions: Array.isArray(saved.transactions) ? saved.transactions : [],
+      expenses: Array.isArray(saved.expenses) ? saved.expenses : []
+    };
+  } else {
+    state = { ...structuredClone(initialState), officeName: authSession?.account?.officeName || authSession?.account?.office_name || initialState.officeName };
+  }
+  settingsUnlocked = true;
+  localStorage.setItem(`${STORAGE_KEY}:${authSession?.account?.username || 'current'}`, JSON.stringify(state));
+}
+
+function logout(message = '') {
+  saveSession(null);
+  clearTimeout(syncTimer);
+  clearInterval(sessionCheckTimer);
+  currentSite = null;
+  settingsUnlocked = false;
+  state = structuredClone(initialState);
+  authMessage = message;
+  render();
+}
+
+function refreshSubscriptionBanner() {
+  const container = document.querySelector('.page-container');
+  if (!container) return;
+  container.querySelector('.subscription-banner')?.remove();
+  const banner = subscriptionWarning();
+  if (banner) container.insertAdjacentHTML('afterbegin', banner);
+}
+
+function subscriptionWarning(account = authSession?.account) {
+  if (!account) return '';
+  const daysRemaining = Number(account.daysRemaining);
+  const daysUntilLock = Number(account.daysUntilLock);
+  if (!Number.isFinite(daysRemaining) || daysRemaining > 0 || !Number.isFinite(daysUntilLock)) return '';
+  const grace = Math.max(1, daysUntilLock);
+  return `<div class="subscription-banner"><strong>مهلة التجديد</strong><span>يجب تجديد الاشتراك لتجنب وقف الحساب خلال ${grace} ${grace === 1 ? 'يوم' : 'أيام'}.</span></div>`;
+}
 
 function loadState() {
   try {
@@ -53,7 +151,18 @@ function loadState() {
 }
 
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  const accountKey = authSession?.account?.username ? `${STORAGE_KEY}:${authSession.account.username}` : STORAGE_KEY;
+  localStorage.setItem(accountKey, JSON.stringify(state));
+  if (authSession?.role !== 'client') return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async () => {
+    try {
+      await apiRequest('client/state', { method: 'PUT', body: { appState: state } });
+    } catch (error) {
+      if (error.code === 'subscription_locked') logout('تم إيقاف الحساب لانتهاء مهلة التجديد. تواصل مع المدير لتجديد الاشتراك.');
+      else showToast('تعذر مزامنة البيانات مع Supabase. تحقق من الاتصال.', 'error');
+    }
+  }, 350);
 }
 
 function getViewFromHash() {
@@ -122,12 +231,137 @@ function imageMarkup(site, sizeClass = '') {
 
 function render() {
   const root = document.querySelector('#app');
+  if (!authSession) {
+    root.innerHTML = renderAuth();
+    bindAuthEvents();
+    return;
+  }
+  if (authSession.role === 'admin') {
+    root.innerHTML = renderAdmin();
+    bindAdminEvents();
+    return;
+  }
   if (currentSite) {
     root.innerHTML = renderViewer();
     return;
   }
   root.innerHTML = renderShell();
   bindViewEvents();
+}
+
+function renderAuth(message = authMessage) {
+  return `<main class="auth-screen"><section class="auth-card"><div class="brand-mark auth-mark">SH</div><p class="eyebrow">نظام إدارة المكتب</p><h1>تسجيل الدخول</h1><p class="page-subtitle">استخدم بيانات الدخول التي أنشأها مدير النظام.</p>${message ? `<div class="form-alert">${escapeHtml(message)}</div>` : ''}<form id="loginForm" class="auth-form"><label>نوع الحساب<select name="role"><option value="client">حساب مكتب</option><option value="admin">مدير النظام</option></select></label><label>اسم المستخدم<input name="username" required autocomplete="username" minlength="3"></label><label>كلمة المرور<input name="password" type="password" required autocomplete="current-password"></label><button class="primary-btn" type="submit">دخول آمن</button></form><small class="auth-footnote">لا يوجد إنشاء حساب ذاتي. تواصل مع المدير للحصول على حسابك.</small></section></main>`;
+}
+
+let authMessage = '';
+let adminAccounts = [];
+
+function bindAuthEvents() {
+  document.querySelector('#loginForm')?.addEventListener('submit', handleLogin);
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = 'جارٍ التحقق…';
+  authMessage = '';
+  try {
+    const result = await apiRequest('login', { method: 'POST', token: null, body: { role: data.get('role'), username: data.get('username'), password: data.get('password') } });
+    saveSession({ ...result, account: { ...result.account, ...(result.subscription || {}) } });
+    if (result.role === 'client') {
+      const remote = await apiRequest('client/state');
+      applyAccountState(remote);
+      authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
+      saveSession(authSession);
+      settingsUnlocked = true;
+      if (!remote.appState || !Object.keys(remote.appState).length) saveState();
+      startSessionCheck();
+    } else {
+      await refreshAdminAccounts();
+    }
+    currentView = 'home';
+    render();
+  } catch (error) {
+    saveSession(null);
+    if (error.code === 'subscription_locked') authMessage = 'انتهت مهلة التجديد وتم إيقاف الحساب. يرجى التواصل مع المدير لتجديد الاشتراك.';
+    else if (error.code === 'invalid_credentials' || error.status === 401) authMessage = 'اسم المستخدم أو كلمة المرور غير صحيحة.';
+    else authMessage = error.message || 'تعذر تسجيل الدخول. تحقق من اتصال الخدمة وإعداداتها.';
+    render();
+  }
+}
+
+function startSessionCheck() {
+  clearInterval(sessionCheckTimer);
+  sessionCheckTimer = setInterval(async () => {
+    if (authSession?.role !== 'client') return;
+    try {
+      const remote = await apiRequest('client/state');
+      authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
+      saveSession(authSession);
+      refreshSubscriptionBanner();
+    } catch (error) {
+      if (error.status === 401 || error.code === 'subscription_locked') logout('تم إيقاف الحساب أو انتهت الجلسة. تواصل مع المدير لتجديد الاشتراك ثم سجّل الدخول مجددًا.');
+    }
+  }, 60_000);
+}
+
+async function refreshAdminAccounts() {
+  adminAccounts = await apiRequest('admin/accounts');
+}
+
+function renderAdmin() {
+  const rows = adminAccounts.map((account) => {
+    const end = account.subscriptionEndsAt ? new Date(account.subscriptionEndsAt).toLocaleDateString('ar-SA') : '—';
+    return `<article class="account-row"><div class="account-details"><strong>${escapeHtml(account.officeName)}</strong><span>المستخدم: ${escapeHtml(account.username)} · ${escapeHtml(account.ownerName)} · ${escapeHtml(account.phone)}</span><small>ينتهي الاشتراك: ${escapeHtml(end)} · ${account.subscriptionDays} يوم</small></div><form class="renew-form" data-renew-form="${escapeHtml(account.id)}"><input name="days" type="number" min="1" max="36500" value="30" aria-label="أيام التجديد"><button class="secondary-btn" type="submit">تجديد بالأيام</button></form></article>`;
+  }).join('');
+  return `<main class="admin-screen"><header class="admin-header"><div><p class="eyebrow">إدارة الاشتراكات</p><h1>لوحة مدير النظام</h1><p class="page-subtitle">إنشاء حسابات المكاتب ومتابعة مدد الاشتراك.</p></div><button class="ghost-btn" data-logout>تسجيل الخروج</button></header><section class="panel admin-create"><div class="panel-heading"><div><p class="eyebrow">حساب جديد</p><h2>إنشاء حساب مكتب</h2></div></div><form id="createAccountForm" class="form-grid admin-form"><label>اسم المستخدم<input name="username" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>كلمة مرور مؤقتة<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>اسم المكتب<input name="officeName" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" required maxlength="120"></label><label>رقم الهاتف<input name="phone" required maxlength="40"></label><label>مدة الاشتراك بالأيام<input name="subscriptionDays" type="number" min="1" max="36500" required value="30"></label><button class="primary-btn" type="submit">إنشاء الحساب</button></form><p class="helper-text">شارك كلمة المرور المؤقتة مع صاحب المكتب بأمان. لا يُسمح بالتسجيل الذاتي.</p></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">المشتركون</p><h2>الحسابات المسجلة</h2></div><button class="ghost-btn" data-refresh-accounts>تحديث</button></div>${rows ? `<div class="account-list">${rows}</div>` : '<div class="small-empty">لا توجد حسابات بعد.</div>'}</section></main>`;
+}
+
+function bindAdminEvents() {
+  document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
+  document.querySelector('[data-refresh-accounts]')?.addEventListener('click', async () => { try { await refreshAdminAccounts(); render(); } catch (error) { showToast(error.message, 'error'); } });
+  document.querySelector('#createAccountForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const body = Object.fromEntries(data.entries());
+    body.subscriptionDays = Number(body.subscriptionDays);
+    try {
+      await apiRequest('admin/accounts', { method: 'POST', body });
+      await refreshAdminAccounts();
+      showToast('تم إنشاء الحساب. سلّم بيانات الدخول لصاحبه.');
+      render();
+    } catch (error) { showToast(error.code === 'conflict' ? 'اسم المستخدم مستخدم بالفعل.' : error.message, 'error'); }
+  });
+  document.querySelectorAll('[data-renew-form]').forEach((form) => form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const days = Number(new FormData(form).get('days'));
+    try {
+      await apiRequest(`admin/accounts/${encodeURIComponent(form.dataset.renewForm)}/renew`, { method: 'POST', body: { days } });
+      await refreshAdminAccounts();
+      showToast('تم تجديد الاشتراك.');
+      render();
+    } catch (error) { showToast(error.message, 'error'); }
+  }));
+}
+
+async function restoreSession() {
+  if (!authSession?.token) { render(); return; }
+  try {
+    if (authSession.role === 'admin') await refreshAdminAccounts();
+    else {
+      const remote = await apiRequest('client/state');
+      applyAccountState(remote);
+      authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
+      saveSession(authSession);
+      startSessionCheck();
+    }
+  } catch (error) {
+    saveSession(null);
+    authMessage = error.code === 'subscription_locked' ? 'انتهت مهلة التجديد وتم إيقاف الحساب. تواصل مع المدير.' : 'انتهت الجلسة. سجّل الدخول مرة أخرى.';
+  }
+  render();
 }
 
 function renderShell() {
@@ -140,16 +374,16 @@ function renderShell() {
       <nav class="main-nav" aria-label="التنقل الرئيسي">
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
-        <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span>${!settingsUnlocked ? '<small>مقفل</small>' : ''}</button>
+        <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
       </nav>
-      <div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة على الجهاز</div>
+      <div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>
     </aside>
     <main class="main-content">
       <header class="topbar">
         <div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div>
-        <div class="topbar-actions"><span class="live-badge"><i></i> يعمل محليًا</span><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div>
+        <div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div>
       </header>
-      <div class="page-container">${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>
+      <div class="page-container">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>
     </main>
   </div>`;
 }
@@ -162,7 +396,7 @@ function renderHome() {
   });
   const categories = ['الكل', 'المفضلة', ...new Set(state.sites.map((site) => site.category))];
   return `<section class="home-view">
-    <div class="hero-line"><div><p class="eyebrow">مساحة العمل</p><h1>${escapeHtml(state.officeName)}</h1><p class="page-subtitle">كل مواقع الخدمات التي تحتاجها في مكان واحد.</p></div><div class="hero-stat"><span>${state.sites.length}</span><small>موقع محفوظ</small></div></div>
+    <div class="hero-line"><div><p class="eyebrow">مساحة العمل</p><h1>${escapeHtml(state.officeName)}</h1><p class="page-subtitle">${escapeHtml(authSession.account?.ownerName || '')}${authSession.account?.phone ? ` · ${escapeHtml(authSession.account.phone)}` : ''}</p><p class="page-subtitle">كل مواقع الخدمات التي تحتاجها في مكان واحد.</p></div><div class="hero-stat"><span>${state.sites.length}</span><small>موقع محفوظ</small></div></div>
     <div class="toolbar"><label class="search-box">${icon('search', 18)}<input id="siteSearch" value="${escapeHtml(searchTerm)}" placeholder="ابحث عن موقع أو خدمة" aria-label="ابحث عن موقع أو خدمة"></label><div class="category-chips">${categories.map((category) => `<button class="chip ${categoryFilter === category ? 'selected' : ''}" data-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div></div>
     <div class="section-heading"><div><p class="eyebrow">المواقع المتاحة</p><h2>اختر الخدمة</h2></div><span class="result-count">${filteredSites.length} موقع</span></div>
     ${filteredSites.length ? `<div class="sites-grid">${filteredSites.map(renderSiteCard).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon('search', 28)}</div><h3>لا توجد نتائج</h3><p>جرّب كلمة بحث مختلفة أو أضف موقعًا جديدًا من الإعدادات.</p></div>`}
@@ -192,10 +426,9 @@ function renderSales() {
 }
 
 function renderSettings() {
-  if (!settingsUnlocked) return `<section class="settings-lock"><div class="lock-card"><div class="lock-icon">${icon('lock', 30)}</div><p class="eyebrow">وصول المطور</p><h1>الإعدادات مقفلة</h1><p>أدخل كلمة المرور للوصول إلى إدارة المواقع واسم المكتب.</p><form id="unlockForm"><label>كلمة مرور المطور<input id="developerPassword" type="password" inputmode="numeric" autocomplete="off" required placeholder="••••••"></label><button class="primary-btn" type="submit">${icon('lock', 17)} فتح الإعدادات</button></form></div></section>`;
   const editingSite = state.sites.find((site) => site.id === editingSiteId);
-  return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">أدر اسم المكتب ومواقع الخدمات من مكان واحد.</p></div><button class="ghost-btn" data-lock-settings>${icon('lock', 17)} قفل الإعدادات</button></div>
-    <div class="settings-grid"><div class="panel office-panel"><div class="panel-heading"><div><p class="eyebrow">الهوية</p><h2>اسم المكتب أو المؤسسة</h2></div></div><form id="officeForm" class="inline-form"><input name="officeName" value="${escapeHtml(state.officeName)}" required><button class="primary-btn" type="submit">حفظ الاسم</button></form><p class="helper-text">سيظهر الاسم أعلى كروت المواقع في الواجهة الرئيسية فقط.</p></div><div class="panel add-site-panel"><div class="panel-heading"><div><p class="eyebrow">دليل المواقع</p><h2>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h2></div>${editingSite ? `<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>` : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة <span class="label-hint">اختياري</span><input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div></div>
+  return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">اسم المكتب وبيانات صاحبه يديرها مدير النظام.</p></div></div>
+    <div class="settings-grid"><div class="panel office-panel"><div class="panel-heading"><div><p class="eyebrow">بيانات الحساب</p><h2>${escapeHtml(authSession.account?.officeName || state.officeName)}</h2></div></div><p class="helper-text">صاحب المكتب: ${escapeHtml(authSession.account?.ownerName || '—')}</p><p class="helper-text">رقم الهاتف: ${escapeHtml(authSession.account?.phone || '—')}</p><p class="helper-text">اسم الدخول: ${escapeHtml(authSession.account?.username || '—')}</p></div><div class="panel add-site-panel"><div class="panel-heading"><div><p class="eyebrow">دليل المواقع</p><h2>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h2></div>${editingSite ? `<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>` : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة <span class="label-hint">اختياري</span><input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div></div>
     <div class="panel manage-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المحتوى</p><h2>المواقع المضافة</h2></div><span class="record-count">${state.sites.length}</span></div><div class="manage-list">${state.sites.map((site) => `<div class="manage-row">${imageMarkup(site, 'mini-image')}<div class="record-main"><strong>${escapeHtml(site.name)}</strong><small>${escapeHtml(site.category)}</small></div><div class="manage-actions"><button class="icon-btn" data-edit-site="${escapeHtml(site.id)}" aria-label="تعديل ${escapeHtml(site.name)}">${icon('edit', 17)}</button><button class="icon-btn danger" data-delete-site="${escapeHtml(site.id)}" aria-label="حذف ${escapeHtml(site.name)}">${icon('trash', 17)}</button></div></div>`).join('')}</div></div>
   </section>`;
 }
@@ -206,6 +439,7 @@ function renderViewer() {
 }
 
 function bindViewEvents() {
+  document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
   document.querySelectorAll('[data-open-site]').forEach((button) => button.addEventListener('click', () => {
     const site = state.sites.find((item) => item.id === button.dataset.openSite);
@@ -231,31 +465,11 @@ function bindViewEvents() {
   if (salesDate) salesDate.addEventListener('change', (event) => { selectedSalesDate = event.target.value; render(); });
   document.querySelector('#transactionForm')?.addEventListener('submit', handleTransactionSubmit);
   document.querySelector('#expenseForm')?.addEventListener('submit', handleExpenseSubmit);
-  document.querySelector('#unlockForm')?.addEventListener('submit', handleUnlock);
-  document.querySelector('#officeForm')?.addEventListener('submit', handleOfficeSave);
   document.querySelector('#siteForm')?.addEventListener('submit', handleSiteSave);
-  document.querySelector('[data-lock-settings]')?.addEventListener('click', () => { settingsUnlocked = false; editingSiteId = null; render(); });
   document.querySelector('[data-cancel-edit]')?.addEventListener('click', () => { editingSiteId = null; render(); });
   document.querySelectorAll('[data-edit-site]').forEach((button) => button.addEventListener('click', () => { editingSiteId = button.dataset.editSite; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
   document.querySelectorAll('[data-delete-site]').forEach((button) => button.addEventListener('click', () => deleteSite(button.dataset.deleteSite)));
   document.querySelectorAll('[data-delete-record]').forEach((button) => button.addEventListener('click', () => deleteRecord(button.dataset.deleteRecord)));
-}
-
-function handleUnlock(event) {
-  event.preventDefault();
-  const password = new FormData(event.currentTarget).get('password') || document.querySelector('#developerPassword')?.value;
-  if (password === DEVELOPER_PASSWORD) { settingsUnlocked = true; showToast('تم فتح الإعدادات'); render(); }
-  else showToast('كلمة المرور غير صحيحة', 'error');
-}
-
-function handleOfficeSave(event) {
-  event.preventDefault();
-  const name = String(new FormData(event.currentTarget).get('officeName') || '').trim();
-  if (!name) return;
-  state.officeName = name;
-  saveState();
-  showToast('تم حفظ اسم المكتب');
-  render();
 }
 
 async function handleSiteSave(event) {
@@ -345,4 +559,4 @@ document.addEventListener('click', (event) => {
 });
 
 window.addEventListener('hashchange', () => { currentView = getViewFromHash(); currentSite = null; render(); });
-render();
+restoreSession();
