@@ -182,6 +182,22 @@ function isAdminRoute() {
   return pathname === '/max' || (window.location.protocol === 'file:' && hashRoute === 'max');
 }
 
+function trackPublicVisitor() {
+  if (!/^https?:$/.test(window.location.protocol) || isAdminRoute()) return;
+  try {
+    const storageKey = 'albagmi-public-visitor-v1';
+    let visitorId = localStorage.getItem(storageKey);
+    if (!visitorId || !/^[0-9a-f-]{36}$/i.test(visitorId)) {
+      visitorId = globalThis.crypto?.randomUUID?.();
+      if (!visitorId) return;
+      localStorage.setItem(storageKey, visitorId);
+    }
+    fetch(apiUrl('visit'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId }),
+    }).catch(() => {});
+  } catch { /* Browsers with blocked local storage are omitted from unique-visitor counts. */ }
+}
+
 function navigate(view) {
   currentSite = null;
   currentView = view;
@@ -280,6 +296,7 @@ function renderAuth(message = authMessage) {
 
 let authMessage = '';
 let adminAccounts = [];
+let adminMetrics = { totalAccounts: 0, activeAccounts: 0, graceAccounts: 0, disabledAccounts: 0, totalLogins: 0, uniqueVisitors: 0 };
 
 function bindAuthEvents() {
   document.querySelector('#loginForm')?.addEventListener('submit', handleLogin);
@@ -297,11 +314,13 @@ async function checkServiceConnection(event) {
     } else if (!result.ok) {
       authMessage = result.missing?.length
         ? `إعداد Vercel غير مكتمل: ${result.missing.join('، ')}`
-        : result.error === 'user_data_table_unavailable'
+        : result.error === 'analytics_table_unavailable'
+          ? 'اتصلنا بـSupabase لكن جدول عدّ الزوار غير متاح.'
+          : result.error === 'user_data_table_unavailable'
           ? 'اتصلنا بـSupabase لكن جدول بيانات الحسابات حسب UID غير متاح.'
           : 'وصلنا إلى API لكن إعداد Supabase أو جدول الحسابات غير سليم.';
     } else {
-      authMessage = 'الاتصال يعمل: واجهة Vercel وSupabase وجدولا الحسابات وبيانات UID متاحان.';
+      authMessage = 'الاتصال يعمل: واجهة Vercel وSupabase وجداول الحسابات والبيانات والإحصاءات متاحة.';
     }
   } catch (error) {
     if (error.code === 'server_configuration_missing' && error.details?.missing?.length) {
@@ -332,7 +351,7 @@ async function handleLogin(event) {
   try {
     const result = await apiRequest(admin ? 'admin/login' : 'login', {
       method: 'POST', token: null,
-      body: admin ? { password: data.get('password') } : { username: data.get('username'), password: data.get('password') }
+      body: admin ? { password: data.get('password') } : { role: 'client', username: data.get('username'), password: data.get('password') }
     });
     saveSession({ ...result, account: { ...result.account, ...(result.subscription || {}) } });
     if (result.role === 'client') {
@@ -350,6 +369,7 @@ async function handleLogin(event) {
   } catch (error) {
     saveSession(null);
     if (error.code === 'subscription_locked') authMessage = 'انتهت مهلة التجديد وتم إيقاف الحساب. يرجى التواصل مع المدير لتجديد الاشتراك.';
+    else if (error.code === 'account_disabled') authMessage = 'هذا الحساب موقوف من مدير النظام. تواصل مع المدير لإعادة تفعيله.';
     else if (error.code === 'invalid_credentials' || error.status === 401) authMessage = admin ? 'كلمة مرور لوحة الإدارة غير صحيحة.' : 'اسم المستخدم أو كلمة المرور غير صحيحة.';
     else if (error.code === 'network_error') authMessage = error.message;
     else if (error.code === 'server_configuration_missing') authMessage = `إعداد Vercel غير مكتمل: ${error.details?.missing?.join('، ') || 'راجع متغيرات البيئة.'}`;
@@ -369,21 +389,29 @@ function startSessionCheck() {
       saveSession(authSession);
       refreshSubscriptionBanner();
     } catch (error) {
-      if (error.status === 401 || error.code === 'subscription_locked') logout('تم إيقاف الحساب أو انتهت الجلسة. تواصل مع المدير لتجديد الاشتراك ثم سجّل الدخول مجددًا.');
+      if (error.status === 401 || error.code === 'subscription_locked' || error.code === 'account_disabled') logout('الحساب موقوف أو انتهت الجلسة/مهلة الاشتراك. تواصل مع المدير.');
     }
   }, 60_000);
 }
 
 async function refreshAdminAccounts() {
-  adminAccounts = await apiRequest('admin/accounts');
+  const [accounts, metrics] = await Promise.all([apiRequest('admin/accounts'), apiRequest('admin/metrics')]);
+  adminAccounts = accounts;
+  adminMetrics = metrics;
 }
 
 function renderAdmin() {
+  const formatNumber = (value) => new Intl.NumberFormat('ar-SA').format(Number(value || 0));
   const rows = adminAccounts.map((account) => {
     const end = account.subscriptionEndsAt ? new Date(account.subscriptionEndsAt).toLocaleDateString('ar-SA') : '—';
-    return `<article class="account-row"><div class="account-details"><strong>${escapeHtml(account.officeName)}</strong><span>المستخدم: ${escapeHtml(account.username)} · ${escapeHtml(account.ownerName)} · ${escapeHtml(account.phone)}</span><small>ينتهي الاشتراك: ${escapeHtml(end)} · ${account.subscriptionDays} يوم</small></div><form class="renew-form" data-renew-form="${escapeHtml(account.id)}"><input name="days" type="number" min="1" max="36500" value="30" aria-label="أيام التجديد"><button class="secondary-btn" type="submit">تجديد بالأيام</button></form></article>`;
+    const endTime = Date.parse(account.subscriptionEndsAt || '');
+    const enabled = account.isActive !== false;
+    const status = !enabled ? 'موقوف إداريًا' : !Number.isFinite(endTime) ? 'حالة غير معروفة' : Date.now() <= endTime ? 'نشط' : Date.now() <= endTime + 5 * 86400000 ? 'مهلة تجديد' : 'مقفل لانتهاء الاشتراك';
+    const statusClass = !enabled || status === 'مقفل لانتهاء الاشتراك' ? 'status-disabled' : status === 'مهلة تجديد' ? 'status-grace' : 'status-active';
+    const lastLogin = account.lastLoginAt ? new Date(account.lastLoginAt).toLocaleString('ar-SA') : 'لم يسجل دخول بعد';
+    return `<article class="account-row"><div class="account-main"><div class="account-title-line"><strong>${escapeHtml(account.officeName)}</strong><span class="account-status ${statusClass}">${escapeHtml(status)}</span></div><span>المستخدم: ${escapeHtml(account.username)} · المالك: ${escapeHtml(account.ownerName)} · الهاتف: ${escapeHtml(account.phone)}</span><small>ينتهي الاشتراك: ${escapeHtml(end)} · ${formatNumber(account.subscriptionDays)} يوم</small><small>تسجيلات الدخول: ${formatNumber(account.loginCount)} · آخر دخول: ${escapeHtml(lastLogin)}</small></div><div class="account-actions"><form class="renew-form" data-renew-form="${escapeHtml(account.id)}"><input name="days" type="number" min="1" max="36500" value="30" aria-label="أيام التجديد"><button class="secondary-btn" type="submit">تجديد بالأيام</button></form><details class="account-edit-details"><summary>تعديل بيانات الحساب</summary><form class="form-grid admin-form account-edit-form" data-edit-account-form="${escapeHtml(account.id)}"><label>اسم المستخدم<input name="username" value="${escapeHtml(account.username)}" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>اسم المكتب<input name="officeName" value="${escapeHtml(account.officeName)}" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" value="${escapeHtml(account.ownerName)}" required maxlength="120"></label><label>رقم الهاتف<input name="phone" value="${escapeHtml(account.phone)}" required maxlength="40"></label><label>كلمة مرور جديدة (اختياري)<input name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" placeholder="اتركه فارغًا دون تغيير"></label><label class="account-toggle-label"><input name="isActive" type="checkbox" ${enabled ? 'checked' : ''}><span>الحساب مفعل</span></label><button class="primary-btn" type="submit">حفظ التعديلات</button></form></details></div></article>`;
   }).join('');
-  return `<main class="admin-screen"><header class="admin-header"><div><p class="eyebrow">إدارة الاشتراكات</p><h1>لوحة مدير النظام</h1><p class="page-subtitle">إنشاء حسابات المكاتب ومتابعة مدد الاشتراك.</p></div><button class="ghost-btn" data-logout>تسجيل الخروج</button></header><section class="panel admin-create"><div class="panel-heading"><div><p class="eyebrow">حساب جديد</p><h2>إنشاء حساب مكتب</h2></div></div><form id="createAccountForm" class="form-grid admin-form"><label>اسم المستخدم<input name="username" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>كلمة مرور مؤقتة<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>اسم المكتب<input name="officeName" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" required maxlength="120"></label><label>رقم الهاتف<input name="phone" required maxlength="40"></label><label>مدة الاشتراك بالأيام<input name="subscriptionDays" type="number" min="1" max="36500" required value="30"></label><button class="primary-btn" type="submit">إنشاء الحساب</button></form><p class="helper-text">شارك كلمة المرور المؤقتة مع صاحب المكتب بأمان. لا يُسمح بالتسجيل الذاتي.</p></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">المشتركون</p><h2>الحسابات المسجلة</h2></div><button class="ghost-btn" data-refresh-accounts>تحديث</button></div>${rows ? `<div class="account-list">${rows}</div>` : '<div class="small-empty">لا توجد حسابات بعد.</div>'}</section></main>`;
+  return `<main class="admin-screen"><header class="admin-header"><div><p class="eyebrow">إدارة الاشتراكات والاستخدام</p><h1>لوحة مدير النظام</h1><p class="page-subtitle">إدارة حسابات المكاتب ومتابعة الاشتراكات والدخول.</p></div><button class="ghost-btn" data-logout>تسجيل الخروج</button></header><section class="summary-grid admin-stats" aria-label="إحصاءات النظام"><article class="summary-card"><span>حسابات نشطة</span><strong>${formatNumber(adminMetrics.activeAccounts)}</strong><small>من أصل ${formatNumber(adminMetrics.totalAccounts)}</small></article><article class="summary-card"><span>داخل مهلة التجديد</span><strong>${formatNumber(adminMetrics.graceAccounts)}</strong><small>مهلة خمسة أيام</small></article><article class="summary-card"><span>تسجيلات دخول المكاتب</span><strong>${formatNumber(adminMetrics.totalLogins)}</strong><small>منذ تفعيل عدّاد الدخول</small></article><article class="summary-card"><span>زوار فريدون تقريبًا</span><strong>${formatNumber(adminMetrics.uniqueVisitors)}</strong><small>معرّفات متصفحات، لا أشخاص مؤكّدين</small></article></section><p class="helper-text admin-privacy-note">يُحسب الزائر مرة لكل متصفح محفوظ فيه معرّف عشوائي. لا يُسجَّل عنوان IP أو اسم الزائر.</p><section class="panel admin-create"><div class="panel-heading"><div><p class="eyebrow">حساب جديد</p><h2>إنشاء حساب مكتب</h2></div></div><form id="createAccountForm" class="form-grid admin-form"><label>اسم المستخدم<input name="username" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>كلمة مرور مؤقتة<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>اسم المكتب<input name="officeName" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" required maxlength="120"></label><label>رقم الهاتف<input name="phone" required maxlength="40"></label><label>مدة الاشتراك بالأيام<input name="subscriptionDays" type="number" min="1" max="36500" required value="30"></label><button class="primary-btn" type="submit">إنشاء الحساب</button></form><p class="helper-text">شارك كلمة المرور المؤقتة مع صاحب المكتب بأمان. لا يُسمح بالتسجيل الذاتي.</p></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">المشتركون</p><h2>الحسابات المسجلة</h2></div><button class="ghost-btn" data-refresh-accounts>تحديث الإحصاءات والحسابات</button></div>${rows ? `<div class="account-list">${rows}</div>` : '<div class="small-empty">لا توجد حسابات بعد.</div>'}</section></main>`;
 }
 
 function bindAdminEvents() {
@@ -401,6 +429,29 @@ function bindAdminEvents() {
       render();
     } catch (error) { showToast(error.code === 'conflict' ? 'اسم المستخدم مستخدم بالفعل.' : error.message, 'error'); }
   });
+  document.querySelectorAll('[data-edit-account-form]').forEach((form) => form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const password = String(data.get('password') || '');
+    const body = {
+      username: data.get('username'), officeName: data.get('officeName'), ownerName: data.get('ownerName'), phone: data.get('phone'),
+      isActive: form.querySelector('[name="isActive"]').checked,
+    };
+    if (password) body.password = password;
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    button.textContent = 'جارٍ الحفظ…';
+    try {
+      await apiRequest(`admin/accounts/${encodeURIComponent(form.dataset.editAccountForm)}`, { method: 'PUT', body });
+      await refreshAdminAccounts();
+      showToast('تم تحديث بيانات الحساب.');
+      render();
+    } catch (error) {
+      const message = error.code === 'username_taken' || error.code === 'conflict' ? 'اسم المستخدم مستخدم بالفعل.' : error.code === 'invalid_password' ? 'كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل.' : error.code === 'account_update_partial_failure' ? 'تم تحديث بيانات الدخول جزئيًا؛ راجع الحساب قبل إعادة المحاولة.' : error.message;
+      showToast(message, 'error');
+      if (button.isConnected) { button.disabled = false; button.textContent = 'حفظ التعديلات'; }
+    }
+  }));
   document.querySelectorAll('[data-renew-form]').forEach((form) => form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const days = Number(new FormData(form).get('days'));
@@ -429,7 +480,7 @@ async function restoreSession() {
     }
   } catch (error) {
     saveSession(null);
-    authMessage = error.code === 'subscription_locked' ? 'انتهت مهلة التجديد وتم إيقاف الحساب. تواصل مع المدير.' : 'انتهت الجلسة. سجّل الدخول مرة أخرى.';
+    authMessage = error.code === 'account_disabled' ? 'هذا الحساب موقوف من مدير النظام. تواصل مع المدير.' : error.code === 'subscription_locked' ? 'انتهت مهلة التجديد وتم إيقاف الحساب. تواصل مع المدير.' : 'انتهت الجلسة. سجّل الدخول مرة أخرى.';
   }
   render();
 }
@@ -643,4 +694,5 @@ document.addEventListener('click', (event) => {
 });
 
 window.addEventListener('hashchange', () => { currentView = getViewFromHash(); currentSite = null; render(); });
+trackPublicVisitor();
 restoreSession();

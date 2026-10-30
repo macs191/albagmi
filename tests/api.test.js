@@ -4,6 +4,8 @@ import { test } from 'node:test';
 import handler from '../api/[...path].js';
 import adminLoginRoute from '../api/admin/login.js';
 import adminAccountsRoute from '../api/admin/accounts.js';
+import adminMetricsRoute from '../api/admin/metrics.js';
+import updateAccountRoute from '../api/admin/accounts/[accountId].js';
 import renewAccountRoute from '../api/admin/accounts/[accountId]/renew.js';
 import clientStateRoute from '../api/client/state.js';
 import { aggregateDailyReport, aggregateMonthlyReport, renderDailyReportHtml, renderMonthlyReportHtml } from '../src/reports.js';
@@ -65,6 +67,9 @@ const account = {
   subscription_started_at: '2026-10-30T00:00:00.000Z',
   subscription_days: 30,
   subscription_ends_at: new Date(Date.now() + 30 * 86400000).toISOString(),
+  is_active: true,
+  login_count: 0,
+  last_login_at: null,
   app_state: {}
 };
 
@@ -93,6 +98,7 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
         assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
         return new Response('[]', { status: 200 });
       }
+      if (String(url).includes('/rest/v1/albagmi_site_visitors?select=visitor_id&limit=1')) return new Response('[]', { status: 200 });
       throw new Error(`Unexpected test URL: ${url}`);
     }, () => callApi('GET', '/api/health'));
     assert.equal(response.statusCode, 200);
@@ -115,6 +121,9 @@ test('admin logs in with a server-side password only; office login rejects admin
     const bypass = await callApi('POST', '/api/login', { role: 'admin', username: 'admin', password: process.env.ALBAGMI_ADMIN_PASSWORD });
     assert.equal(bypass.statusCode, 400);
     assert.equal(bypass.data.error, 'invalid_role');
+    const missingRole = await callApi('POST', '/api/login', { username: 'office1', password: 'office-test-password' });
+    assert.equal(missingRole.statusCode, 400);
+    assert.equal(missingRole.data.error, 'invalid_role');
   } finally {
     restoreEnv(original);
   }
@@ -123,13 +132,20 @@ test('admin logs in with a server-side password only; office login rejects admin
 test('office login authenticates against Supabase Auth and the matching office row', async () => {
   const original = snapshotEnv();
   setTestEnv();
+  let loginRpcCalls = 0;
   try {
-    const response = await withMockFetch(async (url) => {
+    const response = await withMockFetch(async (url, options = {}) => {
       const target = String(url);
       if (target.includes('/rest/v1/albagmi_accounts?select=*&username=eq.office1')) return new Response(JSON.stringify([account]), { status: 200 });
       if (target.includes('/auth/v1/token?grant_type=password')) return new Response(JSON.stringify({ access_token: 'test-access', refresh_token: 'test-refresh', user: { id: 'auth-user-1' } }), { status: 200 });
       if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
       if (target.includes('/rest/v1/albagmi_accounts?select=*&auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      if (target.includes('/rest/v1/rpc/albagmi_increment_login')) {
+        loginRpcCalls += 1;
+        assert.equal(options.method, 'POST');
+        assert.deepEqual(JSON.parse(options.body), { p_account_id: 'account-1' });
+        return new Response('1', { status: 200 });
+      }
       throw new Error(`Unexpected test URL: ${target}`);
     }, () => callApi('POST', '/api/login', { role: 'client', username: 'office1', password: 'office-test-password' }));
     assert.equal(response.statusCode, 200);
@@ -137,6 +153,138 @@ test('office login authenticates against Supabase Auth and the matching office r
     assert.equal(response.data.account.officeName, 'مكتب الاختبار');
     assert.equal(response.data.token, 'test-access');
     assert.equal(response.data.userId, 'auth-user-1');
+    assert.equal(loginRpcCalls, 1);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('disabled offices cannot log in and do not increment login counts', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  const disabled = { ...account, is_active: false };
+  let incremented = false;
+  try {
+    const response = await withMockFetch(async (url) => {
+      const target = String(url);
+      if (target.includes('username=eq.office1')) return new Response(JSON.stringify([disabled]), { status: 200 });
+      if (target.includes('/auth/v1/token?grant_type=password')) return new Response(JSON.stringify({ access_token: 'test-access', refresh_token: 'test-refresh', user: { id: 'auth-user-1' } }), { status: 200 });
+      if (target.includes('auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([disabled]), { status: 200 });
+      if (target.includes('/rpc/albagmi_increment_login')) { incremented = true; return new Response('1', { status: 200 }); }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('POST', '/api/login', { role: 'client', username: 'office1', password: 'office-test-password' }));
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.data.error, 'account_disabled');
+    assert.equal(incremented, false);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('disabling an office blocks an already-issued Supabase session from reading state', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  try {
+    const response = await withMockFetch(async (url) => {
+      const target = String(url);
+      if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      if (target.includes('auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([{ ...account, is_active: false }]), { status: 200 });
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('GET', '/api/client/state', undefined, { authorization: 'Bearer existing-client-access-token' }));
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.data.error, 'account_disabled');
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('admin can edit office fields, change username/password, and disable an account safely', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  try {
+    const admin = await callApi('POST', '/api/admin/login', { password: process.env.ALBAGMI_ADMIN_PASSWORD });
+    let authPatch;
+    let databasePatch;
+    const updatedRow = { ...account, username: 'office2', office_name: 'مكتب محدث', owner_name: 'مالك محدث', phone: '0511111111', is_active: false, login_count: 3, last_login_at: new Date().toISOString() };
+    const response = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.includes('id=eq.account-1') && options.method !== 'PATCH') return new Response(JSON.stringify([account]), { status: 200 });
+      if (target.includes('username=eq.office2')) return new Response('[]', { status: 200 });
+      if (target.includes('/auth/v1/admin/users/auth-user-1')) {
+        assert.equal(options.method, 'PUT');
+        authPatch = JSON.parse(options.body);
+        assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
+        return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      }
+      if (target.includes('id=eq.account-1') && options.method === 'PATCH') {
+        databasePatch = JSON.parse(options.body);
+        return new Response(JSON.stringify([updatedRow]), { status: 200 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('PUT', '/api/admin/accounts/account-1', {
+      username: 'office2', officeName: 'مكتب محدث', ownerName: 'مالك محدث', phone: '0511111111', isActive: false, password: 'new-office-pass-123',
+    }, { authorization: `Bearer ${admin.data.token}` }));
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.data.username, 'office2');
+    assert.equal(response.data.isActive, false);
+    assert.equal(response.data.loginCount, 3);
+    assert.equal(authPatch.email, 'office2@albagmi.local');
+    assert.equal(authPatch.password, 'new-office-pass-123');
+    assert.equal('password' in databasePatch, false);
+    assert.equal('password' in response.data, false);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('admin usage metrics count active, grace, disabled accounts and unique browsers', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  try {
+    const admin = await callApi('POST', '/api/admin/login', { password: process.env.ALBAGMI_ADMIN_PASSWORD });
+    const rows = [
+      { is_active: true, subscription_ends_at: new Date(Date.now() + 86400000).toISOString(), login_count: 2 },
+      { is_active: true, subscription_ends_at: new Date(Date.now() - 86400000).toISOString(), login_count: 5 },
+      { is_active: false, subscription_ends_at: new Date(Date.now() + 86400000).toISOString(), login_count: 7 },
+    ];
+    const response = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.includes('/rest/v1/albagmi_accounts?') && target.includes('login_count')) return new Response(JSON.stringify(rows), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_site_visitors?select=visitor_id')) {
+        assert.equal(options.headers?.Prefer, 'count=exact');
+        return new Response('[{"visitor_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}]', { status: 200, headers: { 'Content-Range': '0-0/42' } });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('GET', '/api/admin/metrics', undefined, { authorization: `Bearer ${admin.data.token}` }));
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.data.totalAccounts, 3);
+    assert.equal(response.data.activeAccounts, 1);
+    assert.equal(response.data.graceAccounts, 1);
+    assert.equal(response.data.disabledAccounts, 1);
+    assert.equal(response.data.totalLogins, 14);
+    assert.equal(response.data.uniqueVisitors, 42);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('public visit registration stores only a validated random browser UUID', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  const visitorId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  try {
+    const response = await withMockFetch(async (url, options = {}) => {
+      assert.ok(String(url).includes('/rest/v1/albagmi_site_visitors?on_conflict=visitor_id'));
+      assert.equal(options.method, 'POST');
+      assert.equal(options.headers?.Prefer, 'resolution=ignore-duplicates,return=minimal');
+      assert.deepEqual(JSON.parse(options.body), { visitor_id: visitorId });
+      return new Response(null, { status: 201 });
+    }, () => callApi('POST', '/api/visit', { visitorId }));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.data, { ok: true });
+    const invalid = await callApi('POST', '/api/visit', { visitorId: 'not-a-uuid', ip: '192.0.2.1' });
+    assert.equal(invalid.statusCode, 400);
+    assert.equal(invalid.data.error, 'invalid_visitor_id');
   } finally {
     restoreEnv(original);
   }
@@ -151,9 +299,14 @@ test('Vercel rewrites the protected-looking /max route to the SPA entry only', a
 });
 
 test('Vercel has explicit entry points for every multi-segment API route', () => {
-  for (const route of [adminLoginRoute, adminAccountsRoute, renewAccountRoute, clientStateRoute]) {
+  for (const route of [adminLoginRoute, adminAccountsRoute, adminMetricsRoute, updateAccountRoute, renewAccountRoute, clientStateRoute]) {
     assert.equal(route, handler);
   }
+});
+
+test('office login form sends the client role required by the API', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(source, /role: 'client', username: data\.get\('username'\), password: data\.get\('password'\)/);
 });
 
 

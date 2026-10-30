@@ -280,3 +280,30 @@ h3 { margin-bottom: 8px; font-size: 18px; }
   .report-actions { align-items: stretch; flex-direction: column; }
   .report-actions > button, .report-month { width: 100%; }
 }
+
+
+/* Office account management and privacy-preserving usage metrics */
+.admin-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0 0 10px; }
+.admin-privacy-note { margin: 0 2px 22px; line-height: 1.7; }
+.account-main { display: grid; gap: 6px; flex: 1; min-width: 0; }
+.account-title-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.account-status { display: inline-flex; align-items: center; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; font-size: 10px; white-space: nowrap; }
+.account-status.status-active { color: #9bf0d5; border-color: rgba(85,214,173,.3); background: rgba(85,214,173,.08); }
+.account-status.status-grace { color: #ffe5b9; border-color: rgba(245,190,112,.35); background: rgba(245,190,112,.08); }
+.account-status.status-disabled { color: #ffd2ce; border-color: rgba(237,132,127,.35); background: rgba(237,132,127,.08); }
+.account-actions { display: grid; gap: 9px; width: min(100%, 430px); flex: 0 0 auto; }
+.account-edit-details { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02); }
+.account-edit-details summary { color: var(--accent); cursor: pointer; font-size: 12px; }
+.account-edit-form { padding-top: 12px; }
+.account-edit-form .account-toggle-label { display: flex; align-items: center; gap: 10px; min-height: 43px; }
+.account-edit-form .account-toggle-label input { width: 18px; min-height: 18px; margin: 0; accent-color: var(--accent); }
+.account-edit-form .account-toggle-label span { color: var(--muted); }
+.account-edit-form .primary-btn { grid-column: 1 / -1; }
+@media (max-width: 900px) {
+  .admin-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  .admin-stats { grid-template-columns: 1fr 1fr; }
+  .account-actions { width: 100%; }
+  .account-edit-form .primary-btn { grid-column: auto; }
+}

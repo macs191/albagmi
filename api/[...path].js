@@ -2,8 +2,10 @@ import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 
 const ACCOUNT_TABLE = 'albagmi_accounts';
 const USER_DATA_TABLE = 'albagmi_user_data';
+const VISITOR_TABLE = 'albagmi_site_visitors';
 const MAX_STATE_BYTES = 1024 * 1024;
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const loginFailures = new Map();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 8;
@@ -64,6 +66,9 @@ function accountProfile(row) {
     subscriptionStartedAt: row.subscription_started_at,
     subscriptionDays: row.subscription_days,
     subscriptionEndsAt: row.subscription_ends_at,
+    isActive: row.is_active !== false,
+    loginCount: Number(row.login_count || 0),
+    lastLoginAt: row.last_login_at || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -89,6 +94,10 @@ function enforceGrace(row) {
     throw new HttpError(403, 'subscription_locked', { subscription: info });
   }
   return info;
+}
+
+function enforceAccountActive(row) {
+  if (row.is_active === false) throw new HttpError(403, 'account_disabled');
 }
 
 function safeEqual(a, b) {
@@ -202,6 +211,12 @@ async function findAccountByAuthId(id) {
   return Array.isArray(data) ? data[0] || null : null;
 }
 
+async function incrementAccountLogin(accountId) {
+  await supabaseFetch('/rest/v1/rpc/albagmi_increment_login', {
+    method: 'POST', body: JSON.stringify({ p_account_id: accountId }),
+  }, true);
+}
+
 async function requireClient(req) {
   const token = bearer(req);
   if (!token) throw new HttpError(401, 'unauthorized');
@@ -213,6 +228,7 @@ async function requireClient(req) {
   if (!auth?.id) throw new HttpError(401, 'unauthorized');
   const account = await findAccountByAuthId(auth.id);
   if (!account) throw new HttpError(403, 'account_not_found');
+  enforceAccountActive(account);
   const subscription = enforceGrace(account);
   return { account, subscription, userId: auth.id };
 }
@@ -235,7 +251,9 @@ async function clientLogin(username, password) {
   } catch { throw new HttpError(401, 'invalid_credentials'); }
   const verifiedAccount = await findAccountByAuthId(auth?.user?.id);
   if (!verifiedAccount || verifiedAccount.id !== account.id) throw new HttpError(401, 'invalid_credentials');
+  enforceAccountActive(verifiedAccount);
   const subscription = enforceGrace(verifiedAccount);
+  await incrementAccountLogin(verifiedAccount.id);
   return { token: auth.access_token, refreshToken: auth.refresh_token, userId: auth.user.id, role: 'client', account: accountProfile(verifiedAccount), subscription };
 }
 
@@ -262,6 +280,7 @@ async function createAccount(body) {
     office_name: body.officeName.trim(), owner_name: body.ownerName.trim(), phone: body.phone.trim(),
     subscription_started_at: now.toISOString(), subscription_days: subscriptionDays,
     subscription_ends_at: end.toISOString(), app_state: {},
+    is_active: true, login_count: 0, last_login_at: null,
   };
   try {
     const inserted = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}?select=*`, {
@@ -278,6 +297,125 @@ async function createAccount(body) {
     } catch { /* rollback is best-effort; do not expose upstream details */ }
     throw error;
   }
+}
+
+async function updateAccount(id, body) {
+  const current = await findAccountById(id);
+  if (!current) throw new HttpError(404, 'account_not_found');
+  const allowed = new Set(['username', 'officeName', 'ownerName', 'phone', 'isActive', 'password']);
+  if (Object.keys(body).some((key) => !allowed.has(key))) throw new HttpError(400, 'invalid_account_field');
+  const patch = {};
+  const authPatch = {};
+  let usernameChanged = false;
+
+  if (body.username !== undefined) {
+    const username = normalizeUsername(body.username);
+    if (username !== current.username) {
+      const existing = await findAccountByUsername(username);
+      if (existing && existing.id !== current.id) throw new HttpError(409, 'username_taken');
+      patch.username = username;
+      authPatch.email = `${username}@albagmi.local`;
+      authPatch.email_confirm = true;
+      usernameChanged = true;
+    }
+  }
+
+  for (const [field, column, min, max] of [
+    ['officeName', 'office_name', 1, 120],
+    ['ownerName', 'owner_name', 1, 120],
+    ['phone', 'phone', 3, 40],
+  ]) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] !== 'string') throw new HttpError(400, `invalid_${field}`);
+    const value = body[field].trim();
+    if (value.length < min || value.length > max) throw new HttpError(400, `invalid_${field}`);
+    patch[column] = value;
+  }
+
+  if (body.isActive !== undefined) {
+    if (typeof body.isActive !== 'boolean') throw new HttpError(400, 'invalid_isActive');
+    patch.is_active = body.isActive;
+  }
+
+  if (body.password !== undefined && body.password !== '') {
+    if (typeof body.password !== 'string' || body.password.length < 8 || body.password.length > 1024) {
+      throw new HttpError(400, 'invalid_password');
+    }
+    authPatch.password = body.password;
+  }
+
+  let authUpdated = false;
+  if (Object.keys(authPatch).length) {
+    try {
+      await supabaseFetch(`/auth/v1/admin/users/${encodeURIComponent(current.auth_user_id)}`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${env('SUPABASE_SERVICE_ROLE_KEY')}` },
+        body: JSON.stringify(authPatch),
+      }, true);
+    } catch (error) {
+      if (usernameChanged && (error.code === 'conflict' || error.code === 'invalid_request')) throw new HttpError(409, 'username_taken');
+      throw error;
+    }
+    authUpdated = true;
+  }
+
+  if (!Object.keys(patch).length) return accountProfile(current);
+  patch.updated_at = new Date().toISOString();
+  try {
+    const updated = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}?id=eq.${encodeURIComponent(id)}&select=*`, {
+      method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(patch),
+    }, true);
+    const row = Array.isArray(updated.data) ? updated.data[0] : updated.data;
+    if (!row) throw new HttpError(404, 'account_not_found');
+    return accountProfile(row);
+  } catch (error) {
+    if (authUpdated && usernameChanged) {
+      try {
+        await supabaseFetch(`/auth/v1/admin/users/${encodeURIComponent(current.auth_user_id)}`, {
+          method: 'PUT', headers: { Authorization: `Bearer ${env('SUPABASE_SERVICE_ROLE_KEY')}` },
+          body: JSON.stringify({ email: `${current.username}@albagmi.local`, email_confirm: true }),
+        }, true);
+      } catch { throw new HttpError(502, 'account_update_partial_failure'); }
+    }
+    if (authUpdated && authPatch.password) throw new HttpError(502, 'account_update_partial_failure');
+    throw error;
+  }
+}
+
+async function getAdminMetrics() {
+  const { data } = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('is_active,subscription_ends_at,login_count', { order: 'created_at.asc', limit: '1000' })}`, {}, true);
+  const accounts = Array.isArray(data) ? data : [];
+  const now = Date.now();
+  let activeAccounts = 0;
+  let graceAccounts = 0;
+  let disabledAccounts = 0;
+  let lockedAccounts = 0;
+  let totalLogins = 0;
+  for (const account of accounts) {
+    totalLogins += Number(account.login_count || 0);
+    if (account.is_active === false) { disabledAccounts += 1; continue; }
+    const end = Date.parse(account.subscription_ends_at);
+    if (!Number.isFinite(end)) continue;
+    if (now <= end) activeAccounts += 1;
+    else if (now <= end + 5 * 86400000) graceAccounts += 1;
+    else lockedAccounts += 1;
+  }
+  const { response } = await supabaseFetch(`/rest/v1/${VISITOR_TABLE}?select=visitor_id&limit=1`, {
+    headers: { Prefer: 'count=exact' },
+  }, true);
+  const range = response.headers.get('content-range') || '';
+  const uniqueVisitors = Number(range.split('/').pop());
+  if (!Number.isSafeInteger(uniqueVisitors) || uniqueVisitors < 0) throw new HttpError(502, 'visitor_count_unavailable');
+  return { totalAccounts: accounts.length, activeAccounts, graceAccounts, disabledAccounts, lockedAccounts, totalLogins, uniqueVisitors };
+}
+
+async function recordSiteVisitor(body) {
+  const visitorId = body.visitorId;
+  if (typeof visitorId !== 'string' || !UUID_RE.test(visitorId)) throw new HttpError(400, 'invalid_visitor_id');
+  await supabaseFetch(`/rest/v1/${VISITOR_TABLE}?on_conflict=visitor_id`, {
+    method: 'POST',
+    headers: { Prefer: 'resolution=ignore-duplicates,return=minimal' },
+    body: JSON.stringify({ visitor_id: visitorId }),
+  }, true);
 }
 
 function pathSegments(req) {
@@ -316,7 +454,13 @@ export default async function handler(req, res) {
       catch { return json(res, 503, { ok: false, error: 'account_table_unavailable' }); }
       try { await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}${query('user_id', { limit: '1' })}`, {}, true); }
       catch { return json(res, 503, { ok: false, error: 'user_data_table_unavailable' }); }
+      try { await supabaseFetch(`/rest/v1/${VISITOR_TABLE}${query('visitor_id', { limit: '1' })}`, {}, true); }
+      catch { return json(res, 503, { ok: false, error: 'analytics_table_unavailable' }); }
       return json(res, 200, { ok: true, api: 'ready', supabase: 'connected' });
+    }
+    if (segments.length === 1 && segments[0] === 'visit' && method === 'POST') {
+      await recordSiteVisitor(parseBody(req));
+      return json(res, 200, { ok: true });
     }
     if (segments.length === 2 && segments[0] === 'admin' && segments[1] === 'login' && method === 'POST') {
       const body = parseBody(req);
@@ -360,16 +504,22 @@ export default async function handler(req, res) {
       } catch { throw new HttpError(401, 'unauthorized'); }
       const account = await findAccountByAuthId(auth?.user?.id);
       if (!account) throw new HttpError(403, 'account_not_found');
+      enforceAccountActive(account);
       const subscription = enforceGrace(account);
       return json(res, 200, { token: auth.access_token, refreshToken: auth.refresh_token, userId: auth.user.id, role: 'client', account: accountProfile(account), subscription });
+    }
+    if (segments.length === 2 && segments[0] === 'admin' && segments[1] === 'metrics' && method === 'GET') {
+      await requireAdmin(req);
+      return json(res, 200, await getAdminMetrics());
     }
     if (segments[0] === 'admin' && segments[1] === 'accounts') {
       await requireAdmin(req);
       if (segments.length === 2 && method === 'GET') {
-        const { data } = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id,username,office_name,owner_name,phone,subscription_started_at,subscription_days,subscription_ends_at,created_at,updated_at', { order: 'created_at.desc', limit: '1000' })}`, {}, true);
+        const { data } = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id,username,office_name,owner_name,phone,subscription_started_at,subscription_days,subscription_ends_at,is_active,login_count,last_login_at,created_at,updated_at', { order: 'created_at.desc', limit: '1000' })}`, {}, true);
         return json(res, 200, (Array.isArray(data) ? data : []).map(accountProfile));
       }
       if (segments.length === 2 && method === 'POST') return json(res, 201, await createAccount(parseBody(req)));
+      if (segments.length === 3 && method === 'PUT') return json(res, 200, await updateAccount(segments[2], parseBody(req)));
       if (segments.length === 4 && segments[3] === 'renew' && method === 'POST') {
         const body = parseBody(req);
         const days = positiveDays(body.days);
