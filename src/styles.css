@@ -234,6 +234,9 @@ h3 { margin-bottom: 8px; font-size: 18px; }
 .auth-form input, .auth-form select, .admin-form input, .renew-form input { width: 100%; min-height: 43px; padding: 10px 12px; color: var(--text); background: rgba(3,24,27,.5); border: 1px solid var(--line); border-radius: 9px; outline: 0; }
 .auth-form select { color-scheme: dark; }
 .auth-form input:focus, .auth-form select:focus, .admin-form input:focus, .renew-form input:focus { border-color: rgba(85,214,173,.65); }
+.health-check { width: 100%; margin-top: 12px; }
+.auth-route-link { display: block; margin-top: 16px; color: var(--accent); text-align: center; font-size: 12px; text-decoration: none; }
+.auth-route-link:hover { color: #9af0d5; text-decoration: underline; }
 .auth-footnote { display: block; margin-top: 18px; color: var(--muted-2); line-height: 1.8; }
 .form-alert { margin-top: 18px; padding: 11px 13px; color: #ffe7c6; background: rgba(245,190,112,.11); border: 1px solid rgba(245,190,112,.3); border-radius: 10px; font-size: 12px; line-height: 1.8; }
 .subscription-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; padding: 14px 16px; color: #ffe5b9; background: rgba(245,190,112,.1); border: 1px solid rgba(245,190,112,.36); border-right: 4px solid var(--warning); border-radius: 12px; font-size: 12px; line-height: 1.8; }

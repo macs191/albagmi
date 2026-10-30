@@ -15,7 +15,7 @@ function json(res, status, data) {
 
 function env(name) {
   const value = process.env[name];
-  if (!value) throw new HttpError(503, `Server configuration missing: ${name}`);
+  if (!value) throw new HttpError(503, 'server_configuration_missing', { missing: [name] });
   return value;
 }
 
@@ -300,21 +300,30 @@ export default async function handler(req, res) {
   try {
     const segments = pathSegments(req);
     const method = req.method;
+    if (segments.length === 1 && segments[0] === 'health' && method === 'GET') {
+      const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'ALBAGMI_ADMIN_PASSWORD', 'ALBAGMI_ADMIN_JWT_SECRET'];
+      const missing = required.filter((name) => !process.env[name]);
+      if (missing.length) return json(res, 503, { ok: false, error: 'server_configuration_missing', missing });
+      try { await supabaseFetch('/auth/v1/settings'); }
+      catch { return json(res, 502, { ok: false, error: 'supabase_auth_unreachable' }); }
+      try { await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id', { limit: '1' })}`, {}, true); }
+      catch { return json(res, 503, { ok: false, error: 'account_table_unavailable' }); }
+      return json(res, 200, { ok: true, api: 'ready', supabase: 'connected' });
+    }
+    if (segments.length === 2 && segments[0] === 'admin' && segments[1] === 'login' && method === 'POST') {
+      const body = parseBody(req);
+      const password = env('ALBAGMI_ADMIN_PASSWORD');
+      const attemptKey = loginAttemptKey(req, 'admin', 'system');
+      enforceLoginLimit(attemptKey);
+      if (typeof body.password !== 'string' || !safeEqual(body.password, password)) {
+        recordLoginFailure(attemptKey);
+        throw new HttpError(401, 'invalid_credentials');
+      }
+      loginFailures.delete(attemptKey);
+      return json(res, 200, { token: signAdminToken(), role: 'admin', account: { username: 'admin' } });
+    }
     if (segments.length === 1 && segments[0] === 'login' && method === 'POST') {
       const body = parseBody(req);
-      if (body.role === 'admin') {
-        const username = env('ALBAGMI_ADMIN_USERNAME');
-        const password = env('ALBAGMI_ADMIN_PASSWORD');
-        const attemptKey = loginAttemptKey(req, 'admin', body.username);
-        enforceLoginLimit(attemptKey);
-        if (typeof body.username !== 'string' || typeof body.password !== 'string' || !safeEqual(body.username, username) || !safeEqual(body.password, password)) {
-          recordLoginFailure(attemptKey);
-          throw new HttpError(401, 'invalid_credentials');
-        }
-        loginFailures.delete(attemptKey);
-        const token = signAdminToken();
-        return json(res, 200, { token, role: 'admin', account: { username } });
-      }
       if (body.role === 'client') {
         const username = normalizeUsername(body.username);
         if (typeof body.password !== 'string') throw new HttpError(401, 'invalid_credentials');

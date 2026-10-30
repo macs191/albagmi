@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "vite build",
+    "test": "node --test",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
     "desktop": "pnpm build && electron .",
     "package:win": "pnpm build && electron-builder --win portable"

@@ -33,7 +33,6 @@ let syncTimer;
 let sessionCheckTimer;
 let currentView = getViewFromHash();
 let currentSite = null;
-let settingsUnlocked = false;
 let searchTerm = '';
 let categoryFilter = 'الكل';
 let selectedSalesDate = todayKey();
@@ -59,7 +58,10 @@ async function apiRequest(path, { method = 'GET', body, token = authSession?.tok
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
     });
   } catch (error) {
-    throw new Error(error?.message || 'تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت وإعدادات Vercel.');
+    const networkError = new Error('تعذر الوصول إلى API على Vercel. تحقق من نشر دوال API ورابطها وإعدادات CORS لنسخة EXE.');
+    networkError.code = 'network_error';
+    networkError.cause = error;
+    throw networkError;
   }
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -102,7 +104,6 @@ function applyAccountState(accountState) {
   } else {
     state = { ...structuredClone(initialState), officeName: authSession?.account?.officeName || authSession?.account?.office_name || initialState.officeName };
   }
-  settingsUnlocked = true;
   localStorage.setItem(`${STORAGE_KEY}:${authSession?.account?.username || 'current'}`, JSON.stringify(state));
 }
 
@@ -111,7 +112,6 @@ function logout(message = '') {
   clearTimeout(syncTimer);
   clearInterval(sessionCheckTimer);
   currentSite = null;
-  settingsUnlocked = false;
   state = structuredClone(initialState);
   authMessage = message;
   render();
@@ -168,6 +168,12 @@ function saveState() {
 function getViewFromHash() {
   const value = window.location.hash.replace('#', '');
   return ['sales', 'settings'].includes(value) ? value : 'home';
+}
+
+function isAdminRoute() {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+  const hashRoute = window.location.hash.replace(/^#\/?/, '').replace(/\/+$/, '');
+  return pathname === '/max' || (window.location.protocol === 'file:' && hashRoute === 'max');
 }
 
 function navigate(view) {
@@ -231,14 +237,21 @@ function imageMarkup(site, sizeClass = '') {
 
 function render() {
   const root = document.querySelector('#app');
-  if (!authSession) {
+  const adminRoute = isAdminRoute();
+  if (authSession?.role === 'admin' && !adminRoute) saveSession(null);
+  if (adminRoute && (authSession?.role !== 'admin' || !authSession?.token)) {
     root.innerHTML = renderAuth();
     bindAuthEvents();
     return;
   }
-  if (authSession.role === 'admin') {
+  if (adminRoute && authSession?.role === 'admin') {
     root.innerHTML = renderAdmin();
     bindAdminEvents();
+    return;
+  }
+  if (authSession?.role !== 'client' || !authSession?.token) {
+    root.innerHTML = renderAuth();
+    bindAuthEvents();
     return;
   }
   if (currentSite) {
@@ -250,7 +263,13 @@ function render() {
 }
 
 function renderAuth(message = authMessage) {
-  return `<main class="auth-screen"><section class="auth-card"><div class="brand-mark auth-mark">SH</div><p class="eyebrow">نظام إدارة المكتب</p><h1>تسجيل الدخول</h1><p class="page-subtitle">استخدم بيانات الدخول التي أنشأها مدير النظام.</p>${message ? `<div class="form-alert">${escapeHtml(message)}</div>` : ''}<form id="loginForm" class="auth-form"><label>نوع الحساب<select name="role"><option value="client">حساب مكتب</option><option value="admin">مدير النظام</option></select></label><label>اسم المستخدم<input name="username" required autocomplete="username" minlength="3"></label><label>كلمة المرور<input name="password" type="password" required autocomplete="current-password"></label><button class="primary-btn" type="submit">دخول آمن</button></form><small class="auth-footnote">لا يوجد إنشاء حساب ذاتي. تواصل مع المدير للحصول على حسابك.</small></section></main>`;
+  const admin = isAdminRoute();
+  const returnHref = window.location.protocol === 'file:' ? './index.html' : '/';
+  const title = admin ? 'دخول مدير النظام' : 'دخول حساب المكتب';
+  const fields = admin
+    ? '<label>كلمة مرور لوحة الإدارة<input name="password" type="password" required autocomplete="current-password"></label>'
+    : '<label>اسم المستخدم<input name="username" required autocomplete="username" minlength="3"></label><label>كلمة المرور<input name="password" type="password" required autocomplete="current-password"></label>';
+  return `<main class="auth-screen"><section class="auth-card"><div class="brand-mark auth-mark">SH</div><p class="eyebrow">نظام إدارة المكتب</p><h1>${title}</h1><p class="page-subtitle">${admin ? 'هذه الصفحة مخصصة لمدير النظام.' : 'استخدم بيانات المكتب التي أنشأها المدير.'}</p>${message ? `<div class="form-alert">${escapeHtml(message)}</div>` : ''}<form id="loginForm" class="auth-form">${fields}<button class="primary-btn" type="submit">دخول آمن</button></form><button id="healthCheck" class="ghost-btn health-check" type="button">فحص اتصال الخدمة</button>${admin ? `<a class="auth-route-link" href="${returnHref}">العودة إلى دخول المكاتب</a>` : '<small class="auth-footnote">لا يوجد إنشاء حساب ذاتي. تواصل مع المدير للحصول على حسابك.</small>'}</section></main>`;
 }
 
 let authMessage = '';
@@ -258,24 +277,59 @@ let adminAccounts = [];
 
 function bindAuthEvents() {
   document.querySelector('#loginForm')?.addEventListener('submit', handleLogin);
+  document.querySelector('#healthCheck')?.addEventListener('click', checkServiceConnection);
+}
+
+async function checkServiceConnection(event) {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = 'جارٍ الفحص…';
+  try {
+    const result = await apiRequest('health', { token: null, retryAuth: false });
+    if (result.ok !== true && !result.error) {
+      authMessage = 'الموقع لا يقدّم دالة /api/health. pnpm dev يشغّل الواجهة فقط؛ استخدم vercel dev أو موقع Vercel منشورًا.';
+    } else if (!result.ok) {
+      authMessage = result.missing?.length
+        ? `إعداد Vercel غير مكتمل: ${result.missing.join('، ')}`
+        : 'وصلنا إلى API لكن إعداد Supabase أو جدول الحسابات غير سليم.';
+    } else {
+      authMessage = 'الاتصال يعمل: واجهة Vercel وSupabase وجدول الحسابات متاحة.';
+    }
+  } catch (error) {
+    if (error.code === 'server_configuration_missing' && error.details?.missing?.length) {
+      authMessage = `إعدادات Vercel الناقصة: ${error.details.missing.join('، ')}`;
+    } else if (error.code === 'supabase_auth_unreachable') {
+      authMessage = 'دالة Vercel تعمل لكن لا تستطيع الاتصال بـSupabase Auth. راجع SUPABASE_URL وSUPABASE_ANON_KEY.';
+    } else if (error.code === 'account_table_unavailable') {
+      authMessage = 'الاتصال بـSupabase يعمل لكن جدول albagmi_accounts أو مفتاح الخدمة غير جاهز.';
+    } else if (error.code === 'network_error' || error.status === 404) {
+      authMessage = 'تعذر الوصول إلى /api/health. انشر دوال Vercel مع الموقع؛ وفي EXE اضبط VITE_API_BASE_URL وALBAGMI_ALLOWED_ORIGINS.';
+    } else {
+      authMessage = error.message || 'فشل فحص الاتصال. راجع إعدادات Vercel وSupabase.';
+    }
+  }
+  render();
 }
 
 async function handleLogin(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const button = event.currentTarget.querySelector('button[type="submit"]');
+  const admin = isAdminRoute();
   button.disabled = true;
   button.textContent = 'جارٍ التحقق…';
   authMessage = '';
   try {
-    const result = await apiRequest('login', { method: 'POST', token: null, body: { role: data.get('role'), username: data.get('username'), password: data.get('password') } });
+    const result = await apiRequest(admin ? 'admin/login' : 'login', {
+      method: 'POST', token: null,
+      body: admin ? { password: data.get('password') } : { username: data.get('username'), password: data.get('password') }
+    });
     saveSession({ ...result, account: { ...result.account, ...(result.subscription || {}) } });
     if (result.role === 'client') {
       const remote = await apiRequest('client/state');
       applyAccountState(remote);
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
-      settingsUnlocked = true;
       if (!remote.appState || !Object.keys(remote.appState).length) saveState();
       startSessionCheck();
     } else {
@@ -286,8 +340,11 @@ async function handleLogin(event) {
   } catch (error) {
     saveSession(null);
     if (error.code === 'subscription_locked') authMessage = 'انتهت مهلة التجديد وتم إيقاف الحساب. يرجى التواصل مع المدير لتجديد الاشتراك.';
-    else if (error.code === 'invalid_credentials' || error.status === 401) authMessage = 'اسم المستخدم أو كلمة المرور غير صحيحة.';
-    else authMessage = error.message || 'تعذر تسجيل الدخول. تحقق من اتصال الخدمة وإعداداتها.';
+    else if (error.code === 'invalid_credentials' || error.status === 401) authMessage = admin ? 'كلمة مرور لوحة الإدارة غير صحيحة.' : 'اسم المستخدم أو كلمة المرور غير صحيحة.';
+    else if (error.code === 'network_error') authMessage = error.message;
+    else if (error.code === 'server_configuration_missing') authMessage = `إعداد Vercel غير مكتمل: ${error.details?.missing?.join('، ') || 'راجع متغيرات البيئة.'}`;
+    else if (error.code === 'supabase_auth_unreachable' || error.code === 'account_table_unavailable') authMessage = 'الخادم متصل لكن إعداد Supabase أو جدول الحسابات غير سليم. استخدم «فحص اتصال الخدمة».';
+    else authMessage = error.message || 'تعذر تسجيل الدخول. استخدم «فحص اتصال الخدمة» ثم تحقق من إعدادات Vercel.';
     render();
   }
 }
@@ -347,6 +404,8 @@ function bindAdminEvents() {
 }
 
 async function restoreSession() {
+  if (isAdminRoute() && authSession?.role === 'client') { render(); return; }
+  if (!isAdminRoute() && authSession?.role === 'admin') saveSession(null);
   if (!authSession?.token) { render(); return; }
   try {
     if (authSession.role === 'admin') await refreshAdminAccounts();
