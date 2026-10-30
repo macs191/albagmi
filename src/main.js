@@ -1,4 +1,5 @@
 import './styles.css';
+import { aggregateDailyReport, aggregateMonthlyReport, openPrintWindow, renderDailyReportHtml, renderMonthlyReportHtml } from './reports.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -36,6 +37,7 @@ let currentSite = null;
 let searchTerm = '';
 let categoryFilter = 'الكل';
 let selectedSalesDate = todayKey();
+let selectedReportMonth = todayKey().slice(0, 7);
 let editingSiteId = null;
 let toastTimer;
 
@@ -90,6 +92,11 @@ function saveSession(session) {
   else sessionStorage.removeItem(SESSION_KEY);
 }
 
+function userStateCacheKey() {
+  const identity = authSession?.userId ? `uid:${authSession.userId}` : `username:${authSession?.account?.username || 'current'}`;
+  return `${STORAGE_KEY}:${identity}`;
+}
+
 function applyAccountState(accountState) {
   const saved = accountState?.appState || accountState?.app_state || accountState?.state || accountState;
   if (saved && typeof saved === 'object' && !Array.isArray(saved) && ('sites' in saved || 'officeName' in saved)) {
@@ -104,7 +111,7 @@ function applyAccountState(accountState) {
   } else {
     state = { ...structuredClone(initialState), officeName: authSession?.account?.officeName || authSession?.account?.office_name || initialState.officeName };
   }
-  localStorage.setItem(`${STORAGE_KEY}:${authSession?.account?.username || 'current'}`, JSON.stringify(state));
+  localStorage.setItem(userStateCacheKey(), JSON.stringify(state));
 }
 
 function logout(message = '') {
@@ -151,8 +158,7 @@ function loadState() {
 }
 
 function saveState() {
-  const accountKey = authSession?.account?.username ? `${STORAGE_KEY}:${authSession.account.username}` : STORAGE_KEY;
-  localStorage.setItem(accountKey, JSON.stringify(state));
+  localStorage.setItem(userStateCacheKey(), JSON.stringify(state));
   if (authSession?.role !== 'client') return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(async () => {
@@ -291,9 +297,11 @@ async function checkServiceConnection(event) {
     } else if (!result.ok) {
       authMessage = result.missing?.length
         ? `إعداد Vercel غير مكتمل: ${result.missing.join('، ')}`
-        : 'وصلنا إلى API لكن إعداد Supabase أو جدول الحسابات غير سليم.';
+        : result.error === 'user_data_table_unavailable'
+          ? 'اتصلنا بـSupabase لكن جدول بيانات الحسابات حسب UID غير متاح.'
+          : 'وصلنا إلى API لكن إعداد Supabase أو جدول الحسابات غير سليم.';
     } else {
-      authMessage = 'الاتصال يعمل: واجهة Vercel وSupabase وجدول الحسابات متاحة.';
+      authMessage = 'الاتصال يعمل: واجهة Vercel وSupabase وجدولا الحسابات وبيانات UID متاحان.';
     }
   } catch (error) {
     if (error.code === 'server_configuration_missing' && error.details?.missing?.length) {
@@ -302,6 +310,8 @@ async function checkServiceConnection(event) {
       authMessage = 'دالة Vercel تعمل لكن لا تستطيع الاتصال بـSupabase Auth. راجع SUPABASE_URL وSUPABASE_ANON_KEY.';
     } else if (error.code === 'account_table_unavailable') {
       authMessage = 'الاتصال بـSupabase يعمل لكن جدول albagmi_accounts أو مفتاح الخدمة غير جاهز.';
+    } else if (error.code === 'user_data_table_unavailable') {
+      authMessage = 'الاتصال بـSupabase يعمل لكن جدول albagmi_user_data أو مفتاح الخدمة غير جاهز.';
     } else if (error.code === 'network_error' || error.status === 404) {
       authMessage = 'تعذر الوصول إلى /api/health. انشر دوال Vercel مع الموقع؛ وفي EXE اضبط VITE_API_BASE_URL وALBAGMI_ALLOWED_ORIGINS.';
     } else {
@@ -411,6 +421,7 @@ async function restoreSession() {
     if (authSession.role === 'admin') await refreshAdminAccounts();
     else {
       const remote = await apiRequest('client/state');
+      authSession.userId = remote.userId || authSession.userId;
       applyAccountState(remote);
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
@@ -478,6 +489,7 @@ function renderSales() {
   const net = salesTotal - expensesTotal;
   return `<section class="sales-view">
     <div class="view-title-row"><div><p class="eyebrow">الحسابات اليومية</p><h1>المبيعات والمصروفات</h1><p class="page-subtitle">سجّل معاملاتك وتابع صافي اليوم في لحظة.</p></div><label class="date-picker">${icon('calendar', 17)}<span>تصفية حسب اليوم</span><input id="salesDate" type="date" value="${selectedSalesDate === 'all' ? todayKey() : selectedSalesDate}"></label></div>
+    <div class="panel report-tools"><div class="report-description"><p class="eyebrow">التقارير والطباعة</p><h2>تقارير المكتب</h2><p class="helper-text">اطبع تقرير اليوم المحدد أو ملخص الشهر على ورقة A4.</p></div><div class="report-actions"><button class="secondary-btn" id="printDailyReport" type="button">طباعة التقرير اليومي A4</button><label class="report-month">شهر التقرير<input id="reportMonth" type="month" value="${selectedReportMonth}"></label><button class="primary-btn" id="printMonthlyReport" type="button">طباعة التقرير الشهري A4</button></div></div>
     <div class="summary-grid"><div class="summary-card sales"><span class="summary-icon">${icon('receipt')}</span><div><small>إجمالي المعاملات</small><strong>${formatMoney(salesTotal)}</strong></div></div><div class="summary-card expense"><span class="summary-icon">${icon('wallet')}</span><div><small>إجمالي المصروفات</small><strong>${formatMoney(expensesTotal)}</strong></div></div><div class="summary-card net"><span class="summary-icon">${icon('sales')}</span><div><small>صافي اليوم</small><strong>${formatMoney(net)}</strong></div></div></div>
     <div class="sales-layout"><div class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">إضافة جديدة</p><h2>تسجيل معاملة</h2></div><span class="panel-index">01</span></div><form id="transactionForm" class="form-grid"><label>اسم العميل<input name="customer" required placeholder="مثال: عبدالله محمد"></label><label>نوع الخدمة<select name="siteId" required>${state.sites.length ? state.sites.map((site) => `<option value="${escapeHtml(site.id)}">${escapeHtml(site.name)}</option>`).join('') : '<option value="">أضف خدمة من الإعدادات أولًا</option>'}</select></label><label>سعر المعاملة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="primary-btn" type="submit">${icon('plus', 17)} تسجيل المعاملة</button></form></div><div class="panel form-panel expense-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المصاريف</p><h2>تسجيل مصروف</h2></div><span class="panel-index">02</span></div><form id="expenseForm" class="form-grid"><label>نوع المصروف<input name="description" required placeholder="مثال: طعام، وقود، شحن"></label><label>القيمة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="secondary-btn" type="submit">${icon('plus', 17)} إضافة المصروف</button></form></div></div>
     <div class="records-layout"><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">الحركة المالية</p><h2>المعاملات</h2></div><span class="record-count">${transactions.length}</span></div>${transactions.length ? `<div class="records-list">${transactions.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar">${escapeHtml(item.customer.trim().slice(0, 1))}</span><div class="record-main"><strong>${escapeHtml(item.customer)}</strong><small>${escapeHtml(item.siteName)} · ${formatDateTime(item.createdAt)}</small></div><b class="amount-positive">+ ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="transaction:${item.id}" aria-label="حذف المعاملة">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد معاملات في التاريخ المحدد.</div>`}</div><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">المصروفات</p><h2>المصاريف اليومية</h2></div><span class="record-count">${expenses.length}</span></div>${expenses.length ? `<div class="records-list">${expenses.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar expense-avatar">${icon('wallet', 17)}</span><div class="record-main"><strong>${escapeHtml(item.description)}</strong><small>${formatDateTime(item.createdAt)}</small></div><b class="amount-negative">- ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="expense:${item.id}" aria-label="حذف المصروف">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد مصروفات في التاريخ المحدد.</div>`}</div></div>
@@ -522,6 +534,19 @@ function bindViewEvents() {
   if (search) search.addEventListener('input', (event) => { searchTerm = event.target.value; render(); const next = document.querySelector('#siteSearch'); next?.focus(); next?.setSelectionRange(searchTerm.length, searchTerm.length); });
   const salesDate = document.querySelector('#salesDate');
   if (salesDate) salesDate.addEventListener('change', (event) => { selectedSalesDate = event.target.value; render(); });
+  const reportMonth = document.querySelector('#reportMonth');
+  if (reportMonth) reportMonth.addEventListener('change', (event) => { selectedReportMonth = event.target.value || todayKey().slice(0, 7); });
+  document.querySelector('#printDailyReport')?.addEventListener('click', () => {
+    const dateKey = selectedSalesDate && selectedSalesDate !== 'all' ? selectedSalesDate : todayKey();
+    const report = aggregateDailyReport(dateKey, state.transactions, state.expenses);
+    const html = renderDailyReportHtml({ officeName: authSession.account?.officeName || state.officeName, report });
+    if (!openPrintWindow(html)) showToast('اسمح بفتح النوافذ المنبثقة لطباعة التقرير.', 'error');
+  });
+  document.querySelector('#printMonthlyReport')?.addEventListener('click', () => {
+    const report = aggregateMonthlyReport(selectedReportMonth, state.transactions, state.expenses);
+    const html = renderMonthlyReportHtml({ officeName: authSession.account?.officeName || state.officeName, report });
+    if (!openPrintWindow(html)) showToast('اسمح بفتح النوافذ المنبثقة لطباعة التقرير.', 'error');
+  });
   document.querySelector('#transactionForm')?.addEventListener('submit', handleTransactionSubmit);
   document.querySelector('#expenseForm')?.addEventListener('submit', handleExpenseSubmit);
   document.querySelector('#siteForm')?.addEventListener('submit', handleSiteSave);

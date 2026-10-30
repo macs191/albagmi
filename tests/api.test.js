@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import handler from '../api/[...path].js';
+import { aggregateDailyReport, aggregateMonthlyReport, renderDailyReportHtml, renderMonthlyReportHtml } from '../src/reports.js';
 
 const ENV_KEYS = [
   'SUPABASE_URL',
@@ -77,13 +78,14 @@ test('health reports missing Vercel environment variables without leaking values
   }
 });
 
-test('health verifies Supabase Auth and the isolated account table', async () => {
+test('health verifies Supabase Auth and both isolated albagmi tables', async () => {
   const original = snapshotEnv();
   setTestEnv();
   try {
     const response = await withMockFetch(async (url) => {
       if (String(url).endsWith('/auth/v1/settings')) return new Response('{}', { status: 200 });
       if (String(url).includes('/rest/v1/albagmi_accounts?select=id&limit=1')) return new Response('[]', { status: 200 });
+      if (String(url).includes('/rest/v1/albagmi_user_data?select=user_id&limit=1')) return new Response('[]', { status: 200 });
       throw new Error(`Unexpected test URL: ${url}`);
     }, () => callApi('GET', '/api/health'));
     assert.equal(response.statusCode, 200);
@@ -127,6 +129,7 @@ test('office login authenticates against Supabase Auth and the matching office r
     assert.equal(response.data.role, 'client');
     assert.equal(response.data.account.officeName, 'مكتب الاختبار');
     assert.equal(response.data.token, 'test-access');
+    assert.equal(response.data.userId, 'auth-user-1');
   } finally {
     restoreEnv(original);
   }
@@ -138,4 +141,107 @@ test('Vercel rewrites the protected-looking /max route to the SPA entry only', a
   assert.ok(config.rewrites.some((route) => route.source === '/max' && route.destination === '/'));
   assert.ok(config.rewrites.every((route) => route.source !== '/api/:path*'));
   assert.ok(publicRoutes.routes.every((route) => route.path !== '/max'));
+});
+
+
+test('client state reads and writes are scoped to the verified Supabase Auth UID', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  const savedState = { officeName: 'مكتب الاختبار', sites: [], transactions: [{ id: 't1' }], expenses: [] };
+  let postedRecord;
+  try {
+    const response = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_accounts?select=*&auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_user_data?select=app_state&user_id=eq.auth-user-1')) return new Response(JSON.stringify([{ app_state: savedState }]), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_user_data?on_conflict=user_id&select=app_state')) {
+        assert.equal(options.method, 'POST');
+        postedRecord = JSON.parse(options.body);
+        return new Response(JSON.stringify([{ app_state: postedRecord.app_state }]), { status: 201 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, async () => {
+      const read = await callApi('GET', '/api/client/state', undefined, { authorization: 'Bearer test-access' });
+      const write = await callApi('PUT', '/api/client/state', { appState: savedState, user_id: 'untrusted-other-user' }, { authorization: 'Bearer test-access' });
+      return { read, write };
+    });
+    assert.equal(response.read.statusCode, 200);
+    assert.equal(response.read.data.userId, 'auth-user-1');
+    assert.deepEqual(response.read.data.appState, savedState);
+    assert.equal(response.write.statusCode, 200);
+    assert.equal(postedRecord.user_id, 'auth-user-1');
+    assert.deepEqual(response.write.data.appState, savedState);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('daily report totals include only the chosen date and render an A4 portrait report safely', () => {
+  const transactions = [
+    { dateKey: '2026-10-30', amount: 100, customer: '<script>alert(1)</script>', siteName: 'تأمين', createdAt: '2026-10-30T10:00:00Z' },
+    { dateKey: '2026-10-30', amount: 25.5, customer: 'عميل 2', siteName: 'خدمة', createdAt: '2026-10-30T11:00:00Z' },
+    { dateKey: '2026-10-29', amount: 900, customer: 'يوم سابق', siteName: 'خدمة', createdAt: '2026-10-29T11:00:00Z' }
+  ];
+  const expenses = [{ dateKey: '2026-10-30', amount: 10, description: 'مصاريف', createdAt: '2026-10-30T12:00:00Z' }];
+  const report = aggregateDailyReport('2026-10-30', transactions, expenses);
+  assert.equal(report.salesTotal, 125.5);
+  assert.equal(report.expensesTotal, 10);
+  assert.equal(report.net, 115.5);
+  assert.equal(report.transactions.length, 2);
+  const html = renderDailyReportHtml({ officeName: 'مكتب آمن', report });
+  assert.match(html, /size: A4 portrait/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+});
+
+test('monthly report summarizes every calendar day, including zero-sales days, on A4 landscape', () => {
+  const transactions = [
+    { dateKey: '2026-03-01', amount: 50 },
+    { dateKey: '2026-03-02', amount: 25 },
+    { dateKey: '2026-02-28', amount: 1000 }
+  ];
+  const expenses = [{ dateKey: '2026-03-02', amount: 10 }];
+  const report = aggregateMonthlyReport('2026-03', transactions, expenses);
+  assert.equal(report.days.length, 31);
+  assert.equal(report.salesTotal, 75);
+  assert.equal(report.expensesTotal, 10);
+  assert.equal(report.net, 65);
+  assert.equal(report.days[0].salesTotal, 50);
+  assert.equal(report.days[1].net, 15);
+  assert.equal(report.days[30].salesTotal, 0);
+  const html = renderMonthlyReportHtml({ officeName: 'مكتب آمن', report });
+  assert.match(html, /size: A4 landscape/);
+  assert.match(html, /إجمالي مبيعات الشهر/);
+});
+
+
+test('office subscription starts when the system manager activates the account', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  const requestedDays = 14;
+  const startBefore = Date.now();
+  try {
+    const admin = await callApi('POST', '/api/admin/login', { password: process.env.ALBAGMI_ADMIN_PASSWORD });
+    assert.equal(admin.statusCode, 200);
+    let inserted;
+    const created = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.includes('/rest/v1/albagmi_accounts?select=*&username=eq.newoffice')) return new Response('[]', { status: 200 });
+      if (target.endsWith('/auth/v1/admin/users') && options.method === 'POST') return new Response(JSON.stringify({ id: 'auth-new-office' }), { status: 201 });
+      if (target.includes('/rest/v1/albagmi_accounts?select=*') && options.method === 'POST') {
+        inserted = JSON.parse(options.body);
+        return new Response(JSON.stringify([{ ...inserted, created_at: inserted.subscription_started_at, updated_at: inserted.subscription_started_at }]), { status: 201 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('POST', '/api/admin/accounts', {
+      username: 'newoffice', password: 'office-password-123', officeName: 'مكتب جديد', ownerName: 'المالك', phone: '0500000000', subscriptionDays: requestedDays
+    }, { authorization: `Bearer ${admin.data.token}` }));
+    const startedAt = Date.parse(inserted.subscription_started_at);
+    const endsAt = Date.parse(inserted.subscription_ends_at);
+    assert.equal(created.statusCode, 201);
+    assert.ok(startedAt >= startBefore && startedAt <= Date.now());
+    assert.equal(endsAt - startedAt, requestedDays * 86400000);
+  } finally {
+    restoreEnv(original);
+  }
 });

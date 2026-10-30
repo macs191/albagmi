@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 
 const ACCOUNT_TABLE = 'albagmi_accounts';
+const USER_DATA_TABLE = 'albagmi_user_data';
 const MAX_STATE_BYTES = 1024 * 1024;
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
 const loginFailures = new Map();
@@ -208,7 +209,7 @@ async function requireClient(req) {
   const account = await findAccountByAuthId(auth.id);
   if (!account) throw new HttpError(403, 'account_not_found');
   const subscription = enforceGrace(account);
-  return { account, subscription };
+  return { account, subscription, userId: auth.id };
 }
 
 async function requireAdmin(req) {
@@ -230,7 +231,7 @@ async function clientLogin(username, password) {
   const verifiedAccount = await findAccountByAuthId(auth?.user?.id);
   if (!verifiedAccount || verifiedAccount.id !== account.id) throw new HttpError(401, 'invalid_credentials');
   const subscription = enforceGrace(verifiedAccount);
-  return { token: auth.access_token, refreshToken: auth.refresh_token, role: 'client', account: accountProfile(verifiedAccount), subscription };
+  return { token: auth.access_token, refreshToken: auth.refresh_token, userId: auth.user.id, role: 'client', account: accountProfile(verifiedAccount), subscription };
 }
 
 async function createAccount(body) {
@@ -308,6 +309,8 @@ export default async function handler(req, res) {
       catch { return json(res, 502, { ok: false, error: 'supabase_auth_unreachable' }); }
       try { await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id', { limit: '1' })}`, {}, true); }
       catch { return json(res, 503, { ok: false, error: 'account_table_unavailable' }); }
+      try { await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}${query('user_id', { limit: '1' })}`, {}, true); }
+      catch { return json(res, 503, { ok: false, error: 'user_data_table_unavailable' }); }
       return json(res, 200, { ok: true, api: 'ready', supabase: 'connected' });
     }
     if (segments.length === 2 && segments[0] === 'admin' && segments[1] === 'login' && method === 'POST') {
@@ -353,7 +356,7 @@ export default async function handler(req, res) {
       const account = await findAccountByAuthId(auth?.user?.id);
       if (!account) throw new HttpError(403, 'account_not_found');
       const subscription = enforceGrace(account);
-      return json(res, 200, { token: auth.access_token, refreshToken: auth.refresh_token, role: 'client', account: accountProfile(account), subscription });
+      return json(res, 200, { token: auth.access_token, refreshToken: auth.refresh_token, userId: auth.user.id, role: 'client', account: accountProfile(account), subscription });
     }
     if (segments[0] === 'admin' && segments[1] === 'accounts') {
       await requireAdmin(req);
@@ -388,19 +391,23 @@ export default async function handler(req, res) {
       throw new HttpError(404, 'not_found');
     }
     if (segments.length === 2 && segments[0] === 'client' && segments[1] === 'state' && (method === 'GET' || method === 'PUT')) {
-      const { account, subscription } = await requireClient(req);
-      if (method === 'GET') return json(res, 200, { appState: account.app_state || {}, subscription });
+      const { subscription, userId } = await requireClient(req);
+      if (method === 'GET') {
+        const { data } = await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}${query('app_state', { user_id: `eq.${userId}`, limit: '1' })}`, {}, true);
+        const row = Array.isArray(data) ? data[0] : data;
+        return json(res, 200, { appState: row?.app_state || {}, subscription, userId });
+      }
       const body = parseBody(req);
       const state = body.app_state ?? body.appState;
       if (!state || typeof state !== 'object' || Array.isArray(state)) throw new HttpError(400, 'invalid_app_state');
       if (Buffer.byteLength(JSON.stringify(state), 'utf8') > MAX_STATE_BYTES) throw new HttpError(413, 'payload_too_large');
-      const updated = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}?id=eq.${encodeURIComponent(account.id)}&select=app_state`, {
-        method: 'PATCH', headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ app_state: state, updated_at: new Date().toISOString() }),
+      const updated = await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}?on_conflict=user_id&select=app_state`, {
+        method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+        body: JSON.stringify({ user_id: userId, app_state: state, updated_at: new Date().toISOString() }),
       }, true);
       const row = Array.isArray(updated.data) ? updated.data[0] : updated.data;
       if (!row) throw new HttpError(500, 'state_update_failed');
-      return json(res, 200, { appState: row.app_state || {}, subscription });
+      return json(res, 200, { appState: row.app_state || {}, subscription, userId });
     }
     throw new HttpError(404, 'not_found');
   } catch (error) {
