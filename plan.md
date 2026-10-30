@@ -16,6 +16,7 @@
 - `src/reports.js`: تجميع مبيعات ومصروفات اليوم والشهر وإنشاء مستندات طباعة A4.
 - `src/styles.css`: تنسيق RTL لشاشات الدخول والإدارة والتنبيهات مع إعادة استخدام الهوية الحالية.
 - `api/[...path].js`: نقاط Vercel API، تحقق الهوية والاشتراك، إدارة المستخدمين والحالة.
+- `api/admin/login.js`, `api/admin/accounts.js`, `api/admin/accounts/[accountId]/renew.js`, `api/client/state.js`: نقاط دخول ملفية صريحة للمسارات متعددة المقاطع في Vercel، وتعاد منها الاستجابة إلى المعالج المشترك.
 - `supabase/migrations/`: سجل DDL لجدولي الحسابات وبيانات UID، مع نسخ الحالة الموجودة دون حذفها أو تعديل بيانات أخرى.
 - `.env.example` و`README.md`: المتغيرات المطلوبة على Vercel، وأسرار الخادم، وخطوات الويب وElectron.
 

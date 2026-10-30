@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import handler from '../api/[...path].js';
+import adminLoginRoute from '../api/admin/login.js';
+import adminAccountsRoute from '../api/admin/accounts.js';
+import renewAccountRoute from '../api/admin/accounts/[accountId]/renew.js';
+import clientStateRoute from '../api/client/state.js';
 import { aggregateDailyReport, aggregateMonthlyReport, renderDailyReportHtml, renderMonthlyReportHtml } from '../src/reports.js';
 
 const ENV_KEYS = [
@@ -144,6 +148,12 @@ test('Vercel rewrites the protected-looking /max route to the SPA entry only', a
   assert.ok(config.rewrites.some((route) => route.source === '/max' && route.destination === '/'));
   assert.ok(config.rewrites.every((route) => route.source !== '/api/:path*'));
   assert.ok(publicRoutes.routes.every((route) => route.path !== '/max'));
+});
+
+test('Vercel has explicit entry points for every multi-segment API route', () => {
+  for (const route of [adminLoginRoute, adminAccountsRoute, renewAccountRoute, clientStateRoute]) {
+    assert.equal(route, handler);
+  }
 });
 
 

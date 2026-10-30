@@ -22,6 +22,8 @@ pnpm dev
 
 `pnpm dev` يشغّل واجهة Vite فقط ولا يشغّل Vercel Functions؛ لذلك لا يكفي وحده لاختبار تسجيل الدخول. استخدم `vercel dev` مع متغيرات البيئة أو اختبر الموقع بعد نشره على Vercel. صفحة `/api/health` تتحقق من إعدادات الخادم واتصال Supabase وجدولي التطبيق.
 
+لضمان توجيه المسارات المتداخلة على Vercel، توجد نقاط دخول صريحة في `api/admin/login.js` و`api/admin/accounts.js` و`api/admin/accounts/[accountId]/renew.js` و`api/client/state.js`، وتستخدم جميعها معالج الطلب المشترك `api/[...path].js`.
+
 ## Supabase ومتغيرات Vercel
 
 يوجد جدول `public.albagmi_accounts` لحسابات المكاتب والاشتراكات، وجدول `public.albagmi_user_data` لحالة التطبيق ومبيعاته ومصروفاته. يربط `user_id` في الجدول الثاني مباشرة بـSupabase Auth UID. تستخرج Vercel API الـUID من رمز الجلسة الموثق؛ ولا يقبل الخادم UID يرسله العميل لتحديد حساب آخر. الجدولان محميان بـRLS والوصول الخادمي يستخدم `service_role`. أُضيفت migration لإنشاء جدول UID ونسخ حالات الحسابات الموجودة دون حذفها أو تعديل جداول المشروع الأخرى، وطُبقت على مشروع Supabase `macs`.
