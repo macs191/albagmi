@@ -33,7 +33,10 @@ let authSession = loadSession();
 let syncTimer;
 let sessionCheckTimer;
 let currentView = getViewFromHash();
-let currentSite = null;
+let openSiteTabs = [];
+let activeSiteTabId = null;
+let clientPasswordRequest = null;
+let adminPasswordRequests = [];
 let searchTerm = '';
 let categoryFilter = 'الكل';
 let selectedSalesDate = todayKey();
@@ -118,7 +121,8 @@ function logout(message = '') {
   saveSession(null);
   clearTimeout(syncTimer);
   clearInterval(sessionCheckTimer);
-  currentSite = null;
+  openSiteTabs = [];
+  activeSiteTabId = null;
   state = structuredClone(initialState);
   authMessage = message;
   render();
@@ -199,7 +203,7 @@ function trackPublicVisitor() {
 }
 
 function navigate(view) {
-  currentSite = null;
+  activeSiteTabId = null;
   currentView = view;
   window.history.replaceState({}, '', view === 'home' ? `${window.location.pathname}` : `#${view}`);
   render();
@@ -264,24 +268,55 @@ function render() {
   if (adminRoute && (authSession?.role !== 'admin' || !authSession?.token)) {
     root.innerHTML = renderAuth();
     bindAuthEvents();
+    syncDesktopSiteViews();
     return;
   }
   if (adminRoute && authSession?.role === 'admin') {
     root.innerHTML = renderAdmin();
     bindAdminEvents();
+    syncDesktopSiteViews();
     return;
   }
   if (authSession?.role !== 'client' || !authSession?.token) {
     root.innerHTML = renderAuth();
     bindAuthEvents();
-    return;
-  }
-  if (currentSite) {
-    root.innerHTML = renderViewer();
+    syncDesktopSiteViews();
     return;
   }
   root.innerHTML = renderShell();
   bindViewEvents();
+  syncDesktopSiteViews();
+}
+
+function syncDesktopSiteViews() {
+  if (!window.desktopBridge?.syncSiteTabs) return;
+  const host = document.querySelector('#embeddedSiteHost');
+  if (!host) { window.desktopBridge.syncSiteTabs([], null, null); return; }
+  const rect = host.getBoundingClientRect();
+  window.desktopBridge.syncSiteTabs(openSiteTabs, activeSiteTabId, {
+    x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height),
+  });
+}
+
+function openSiteTab(site) {
+  if (!site || !safeUrl(site.url)) return;
+  let tab = openSiteTabs.find((item) => item.id === site.id);
+  if (!tab) {
+    tab = { id: site.id, name: site.name, url: site.url, image: site.image || '' };
+    openSiteTabs.push(tab);
+  }
+  activeSiteTabId = tab.id;
+  currentView = 'home';
+  render();
+}
+
+function closeSiteTab(id) {
+  const index = openSiteTabs.findIndex((item) => item.id === id);
+  if (index < 0) return;
+  const wasActive = activeSiteTabId === id;
+  openSiteTabs.splice(index, 1);
+  if (wasActive) activeSiteTabId = openSiteTabs[Math.max(0, index - 1)]?.id || null;
+  render();
 }
 
 function renderAuth(message = authMessage) {
@@ -316,6 +351,8 @@ async function checkServiceConnection(event) {
         ? `إعداد Vercel غير مكتمل: ${result.missing.join('، ')}`
         : result.error === 'analytics_table_unavailable'
           ? 'اتصلنا بـSupabase لكن جدول عدّ الزوار غير متاح.'
+          : result.error === 'password_request_table_unavailable'
+          ? 'اتصلنا بـSupabase لكن جدول طلبات تغيير كلمة المرور غير موجود أو مفتاح الخدمة لا يملك صلاحية الوصول.'
           : result.error === 'user_data_table_unavailable'
           ? 'اتصلنا بـSupabase لكن جدول بيانات الحسابات حسب UID غير متاح.'
           : 'وصلنا إلى API لكن إعداد Supabase أو جدول الحسابات غير سليم.';
@@ -331,6 +368,8 @@ async function checkServiceConnection(event) {
       authMessage = 'الاتصال بـSupabase يعمل لكن جدول albagmi_accounts أو مفتاح الخدمة غير جاهز.';
     } else if (error.code === 'user_data_table_unavailable') {
       authMessage = 'الاتصال بـSupabase يعمل لكن جدول albagmi_user_data أو مفتاح الخدمة غير جاهز.';
+    } else if (error.code === 'password_request_table_unavailable') {
+      authMessage = 'الاتصال بـSupabase يعمل لكن جدول albagmi_password_change_requests أو مفتاح الخدمة غير جاهز.';
     } else if (error.code === 'network_error' || error.status === 404) {
       authMessage = 'تعذر الوصول إلى /api/health. انشر دوال Vercel مع الموقع؛ وفي EXE اضبط VITE_API_BASE_URL وALBAGMI_ALLOWED_ORIGINS.';
     } else {
@@ -359,6 +398,7 @@ async function handleLogin(event) {
       applyAccountState(remote);
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
+      await refreshClientPasswordRequest();
       if (!remote.appState || !Object.keys(remote.appState).length) saveState();
       startSessionCheck();
     } else {
@@ -395,9 +435,15 @@ function startSessionCheck() {
 }
 
 async function refreshAdminAccounts() {
-  const [accounts, metrics] = await Promise.all([apiRequest('admin/accounts'), apiRequest('admin/metrics')]);
+  const [accounts, metrics, passwordRequests] = await Promise.all([apiRequest('admin/accounts'), apiRequest('admin/metrics'), apiRequest('admin/password-requests')]);
   adminAccounts = accounts;
   adminMetrics = metrics;
+  adminPasswordRequests = passwordRequests;
+}
+
+async function refreshClientPasswordRequest() {
+  try { clientPasswordRequest = (await apiRequest('client/password-request')).request; }
+  catch { clientPasswordRequest = null; }
 }
 
 function renderAdmin() {
@@ -409,14 +455,39 @@ function renderAdmin() {
     const status = !enabled ? 'موقوف إداريًا' : !Number.isFinite(endTime) ? 'حالة غير معروفة' : Date.now() <= endTime ? 'نشط' : Date.now() <= endTime + 5 * 86400000 ? 'مهلة تجديد' : 'مقفل لانتهاء الاشتراك';
     const statusClass = !enabled || status === 'مقفل لانتهاء الاشتراك' ? 'status-disabled' : status === 'مهلة تجديد' ? 'status-grace' : 'status-active';
     const lastLogin = account.lastLoginAt ? new Date(account.lastLoginAt).toLocaleString('ar-SA') : 'لم يسجل دخول بعد';
-    return `<article class="account-row"><div class="account-main"><div class="account-title-line"><strong>${escapeHtml(account.officeName)}</strong><span class="account-status ${statusClass}">${escapeHtml(status)}</span></div><span>المستخدم: ${escapeHtml(account.username)} · المالك: ${escapeHtml(account.ownerName)} · الهاتف: ${escapeHtml(account.phone)}</span><small>ينتهي الاشتراك: ${escapeHtml(end)} · ${formatNumber(account.subscriptionDays)} يوم</small><small>تسجيلات الدخول: ${formatNumber(account.loginCount)} · آخر دخول: ${escapeHtml(lastLogin)}</small></div><div class="account-actions"><form class="renew-form" data-renew-form="${escapeHtml(account.id)}"><input name="days" type="number" min="1" max="36500" value="30" aria-label="أيام التجديد"><button class="secondary-btn" type="submit">تجديد بالأيام</button></form><details class="account-edit-details"><summary>تعديل بيانات الحساب</summary><form class="form-grid admin-form account-edit-form" data-edit-account-form="${escapeHtml(account.id)}"><label>اسم المستخدم<input name="username" value="${escapeHtml(account.username)}" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>اسم المكتب<input name="officeName" value="${escapeHtml(account.officeName)}" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" value="${escapeHtml(account.ownerName)}" required maxlength="120"></label><label>رقم الهاتف<input name="phone" value="${escapeHtml(account.phone)}" required maxlength="40"></label><label>كلمة مرور جديدة (اختياري)<input name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" placeholder="اتركه فارغًا دون تغيير"></label><label class="account-toggle-label"><input name="isActive" type="checkbox" ${enabled ? 'checked' : ''}><span>الحساب مفعل</span></label><button class="primary-btn" type="submit">حفظ التعديلات</button></form></details></div></article>`;
+    return `<article class="account-row"><div class="account-main"><div class="account-title-line"><strong>${escapeHtml(account.officeName)}</strong><span class="account-status ${statusClass}">${escapeHtml(status)}</span></div><span>المستخدم: ${escapeHtml(account.username)} · المالك: ${escapeHtml(account.ownerName)} · الهاتف: ${escapeHtml(account.phone)}</span><small>ينتهي الاشتراك: ${escapeHtml(end)} · ${formatNumber(account.subscriptionDays)} يوم</small><small>تسجيلات الدخول: ${formatNumber(account.loginCount)} · آخر دخول: ${escapeHtml(lastLogin)}</small></div><div class="account-actions"><form class="renew-form" data-renew-form="${escapeHtml(account.id)}"><input name="days" type="number" min="1" max="36500" value="30" aria-label="أيام التجديد"><button class="secondary-btn" type="submit">تجديد بالأيام</button></form><details class="account-edit-details"><summary>تعديل بيانات الحساب</summary><form class="form-grid admin-form account-edit-form" data-edit-account-form="${escapeHtml(account.id)}"><label>اسم المستخدم<input name="username" value="${escapeHtml(account.username)}" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>اسم المكتب<input name="officeName" value="${escapeHtml(account.officeName)}" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" value="${escapeHtml(account.ownerName)}" required maxlength="120"></label><label>رقم الهاتف<input name="phone" value="${escapeHtml(account.phone)}" required maxlength="40"></label><label>كلمة مرور جديدة (اختياري)<input name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" placeholder="اتركه فارغًا دون تغيير"></label><label class="account-toggle-label"><input name="isActive" type="checkbox" ${enabled ? 'checked' : ''}><span>الحساب مفعل</span></label><button class="primary-btn" type="submit">حفظ التعديلات</button></form></details><button class="danger-btn" data-delete-account="${escapeHtml(account.id)}" data-delete-username="${escapeHtml(account.username)}" type="button">حذف الحساب نهائيًا</button></div></article>`;
   }).join('');
-  return `<main class="admin-screen"><header class="admin-header"><div><p class="eyebrow">إدارة الاشتراكات والاستخدام</p><h1>لوحة مدير النظام</h1><p class="page-subtitle">إدارة حسابات المكاتب ومتابعة الاشتراكات والدخول.</p></div><button class="ghost-btn" data-logout>تسجيل الخروج</button></header><section class="summary-grid admin-stats" aria-label="إحصاءات النظام"><article class="summary-card"><span>حسابات نشطة</span><strong>${formatNumber(adminMetrics.activeAccounts)}</strong><small>من أصل ${formatNumber(adminMetrics.totalAccounts)}</small></article><article class="summary-card"><span>داخل مهلة التجديد</span><strong>${formatNumber(adminMetrics.graceAccounts)}</strong><small>مهلة خمسة أيام</small></article><article class="summary-card"><span>تسجيلات دخول المكاتب</span><strong>${formatNumber(adminMetrics.totalLogins)}</strong><small>منذ تفعيل عدّاد الدخول</small></article><article class="summary-card"><span>زوار فريدون تقريبًا</span><strong>${formatNumber(adminMetrics.uniqueVisitors)}</strong><small>معرّفات متصفحات، لا أشخاص مؤكّدين</small></article></section><p class="helper-text admin-privacy-note">يُحسب الزائر مرة لكل متصفح محفوظ فيه معرّف عشوائي. لا يُسجَّل عنوان IP أو اسم الزائر.</p><section class="panel admin-create"><div class="panel-heading"><div><p class="eyebrow">حساب جديد</p><h2>إنشاء حساب مكتب</h2></div></div><form id="createAccountForm" class="form-grid admin-form"><label>اسم المستخدم<input name="username" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>كلمة مرور مؤقتة<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>اسم المكتب<input name="officeName" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" required maxlength="120"></label><label>رقم الهاتف<input name="phone" required maxlength="40"></label><label>مدة الاشتراك بالأيام<input name="subscriptionDays" type="number" min="1" max="36500" required value="30"></label><button class="primary-btn" type="submit">إنشاء الحساب</button></form><p class="helper-text">شارك كلمة المرور المؤقتة مع صاحب المكتب بأمان. لا يُسمح بالتسجيل الذاتي.</p></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">المشتركون</p><h2>الحسابات المسجلة</h2></div><button class="ghost-btn" data-refresh-accounts>تحديث الإحصاءات والحسابات</button></div>${rows ? `<div class="account-list">${rows}</div>` : '<div class="small-empty">لا توجد حسابات بعد.</div>'}</section></main>`;
+  const requests = adminPasswordRequests.map((request) => `<article class="password-request-row"><div><strong>${escapeHtml(request.account?.office_name || 'مكتب')}</strong><small>المستخدم: ${escapeHtml(request.account?.username || '—')} · المالك: ${escapeHtml(request.account?.owner_name || '—')}</small><small>تاريخ الطلب: ${escapeHtml(new Date(request.createdAt).toLocaleString('ar-SA'))}</small></div><div class="request-actions"><button class="primary-btn" data-review-password-request="${escapeHtml(request.id)}" data-decision="approve">موافقة</button><button class="icon-btn danger" data-review-password-request="${escapeHtml(request.id)}" data-decision="reject" aria-label="رفض الطلب">رفض</button></div></article>`).join('');
+  return `<main class="admin-screen"><header class="admin-header"><div><p class="eyebrow">إدارة الاشتراكات والاستخدام</p><h1>لوحة مدير النظام</h1><p class="page-subtitle">إدارة حسابات المكاتب ومتابعة الاشتراكات والدخول.</p></div><button class="ghost-btn" data-logout>تسجيل الخروج</button></header><section class="summary-grid admin-stats" aria-label="إحصاءات النظام"><article class="summary-card"><span>حسابات نشطة</span><strong>${formatNumber(adminMetrics.activeAccounts)}</strong><small>من أصل ${formatNumber(adminMetrics.totalAccounts)}</small></article><article class="summary-card"><span>داخل مهلة التجديد</span><strong>${formatNumber(adminMetrics.graceAccounts)}</strong><small>مهلة خمسة أيام</small></article><article class="summary-card"><span>تسجيلات دخول المكاتب</span><strong>${formatNumber(adminMetrics.totalLogins)}</strong><small>منذ تفعيل عدّاد الدخول</small></article><article class="summary-card"><span>زوار فريدون تقريبًا</span><strong>${formatNumber(adminMetrics.uniqueVisitors)}</strong><small>معرّفات متصفحات، لا أشخاص مؤكّدين</small></article></section><p class="helper-text admin-privacy-note">يُحسب الزائر مرة لكل متصفح محفوظ فيه معرّف عشوائي. لا يُسجَّل عنوان IP أو اسم الزائر.</p><section class="panel admin-create"><div class="panel-heading"><div><p class="eyebrow">حساب جديد</p><h2>إنشاء حساب مكتب</h2></div></div><form id="createAccountForm" class="form-grid admin-form"><label>اسم المستخدم<input name="username" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>كلمة مرور مؤقتة<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>اسم المكتب<input name="officeName" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" required maxlength="120"></label><label>رقم الهاتف<input name="phone" required maxlength="40"></label><label>مدة الاشتراك بالأيام<input name="subscriptionDays" type="number" min="1" max="36500" required value="30"></label><button class="primary-btn" type="submit">إنشاء الحساب</button></form><p class="helper-text">شارك كلمة المرور المؤقتة مع صاحب المكتب بأمان. لا يُسمح بالتسجيل الذاتي.</p></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">طلبات تغيير كلمة المرور</p><h2>طلبات تنتظر موافقتك</h2></div></div>${requests || '<div class="small-empty">لا توجد طلبات معلقة.</div>'}</section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">المشتركون</p><h2>الحسابات المسجلة</h2></div><button class="ghost-btn" data-refresh-accounts>تحديث الإحصاءات والحسابات</button></div>${rows ? `<div class="account-list">${rows}</div>` : '<div class="small-empty">لا توجد حسابات بعد.</div>'}</section></main>`;
 }
 
 function bindAdminEvents() {
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelector('[data-refresh-accounts]')?.addEventListener('click', async () => { try { await refreshAdminAccounts(); render(); } catch (error) { showToast(error.message, 'error'); } });
+  document.querySelectorAll('[data-review-password-request]').forEach((button) => button.addEventListener('click', async () => {
+    const decision = button.dataset.decision;
+    const prompt = decision === 'approve' ? 'ستُطبق كلمة المرور الجديدة فورًا ولن تظهر لك. هل توافق؟' : 'رفض هذا الطلب سيمسح كلمة المرور المطلوبة. هل تريد الرفض؟';
+    if (!window.confirm(prompt)) return;
+    button.disabled = true;
+    try {
+      await apiRequest(`admin/password-requests/${encodeURIComponent(button.dataset.reviewPasswordRequest)}`, { method: 'POST', body: { decision } });
+      await refreshAdminAccounts();
+      showToast(decision === 'approve' ? 'تمت الموافقة وتغيير كلمة المرور.' : 'تم رفض الطلب ومسح كلمة المرور المشفرة.');
+      render();
+    } catch (error) { showToast(error.message || 'تعذر تنفيذ القرار.', 'error'); if (button.isConnected) button.disabled = false; }
+  }));
+  document.querySelectorAll('[data-delete-account]').forEach((button) => button.addEventListener('click', async () => {
+    const username = button.dataset.deleteUsername;
+    const confirmation = window.prompt(`حذف نهائي لا يمكن التراجع عنه. سيُحذف حساب الدخول وجميع بيانات المكتب والسجلات وطلبات تغيير كلمة المرور. اكتب اسم المستخدم «${username}» للتأكيد:`);
+    if (confirmation !== username) return;
+    button.disabled = true;
+    try {
+      await apiRequest(`admin/accounts/${encodeURIComponent(button.dataset.deleteAccount)}`, { method: 'DELETE', body: { confirmUsername: confirmation } });
+      await refreshAdminAccounts();
+      showToast('تم حذف الحساب وبياناته نهائيًا.');
+      render();
+    } catch (error) { showToast(error.message || 'تعذر حذف الحساب.', 'error'); if (button.isConnected) button.disabled = false; }
+  }));
   document.querySelector('#createAccountForm')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
@@ -476,6 +547,7 @@ async function restoreSession() {
       applyAccountState(remote);
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
+      await refreshClientPasswordRequest();
       startSessionCheck();
     }
   } catch (error) {
@@ -501,12 +573,24 @@ function renderShell() {
     </aside>
     <main class="main-content">
       <header class="topbar">
-        <div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div>
+        <div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${activeSiteTabId ? escapeHtml(openSiteTabs.find((tab) => tab.id === activeSiteTabId)?.name || 'موقع خدمة') : currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div>
         <div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div>
       </header>
-      <div class="page-container">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>
+      ${renderSiteTabsBar()}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>`}
     </main>
   </div>`;
+}
+
+function renderSiteTabsBar() {
+  return `<nav class="site-tabs-bar" aria-label="تبويبات مواقع الخدمات"><button class="site-home-tab ${activeSiteTabId ? '' : 'selected'}" data-home-tab aria-label="الرئيسية" title="الرئيسية">${icon('home', 18)}<span>الرئيسية</span></button><div class="site-tabs-list">${openSiteTabs.map((tab) => `<div class="site-tab ${activeSiteTabId === tab.id ? 'active' : ''}"><button class="site-tab-select" data-activate-site="${escapeHtml(tab.id)}" title="${escapeHtml(tab.name)}">${imageMarkup(tab, 'tab-image')}<span>${escapeHtml(tab.name)}</span></button><button class="site-tab-close" data-close-site-tab="${escapeHtml(tab.id)}" aria-label="إغلاق ${escapeHtml(tab.name)}">${icon('close', 14)}</button></div>`).join('')}</div></nav>`;
+}
+
+function renderActiveSiteTab() {
+  const tab = openSiteTabs.find((item) => item.id === activeSiteTabId);
+  if (!tab) { activeSiteTabId = null; return `<div class="page-container">${renderHome()}</div>`; }
+  const url = safeUrl(tab.url);
+  return `<section class="embedded-workspace"><div class="embedded-workspace-title">${imageMarkup(tab, 'viewer-image')}<strong>${escapeHtml(tab.name)}</strong><span>الموقع داخل النظام · لا يظهر الرابط</span>${window.desktopBridge?.printActiveSite ? `<button class="icon-btn site-print-button" data-print-site aria-label="طباعة الصفحة" title="طباعة الصفحة">${icon('receipt', 17)}</button>` : ''}</div><div id="embeddedSiteHost" class="embedded-site-host">${window.desktopBridge?.syncSiteTabs ? '' : url ? `<iframe class="embedded-site-frame" src="${escapeHtml(url)}" title="${escapeHtml(tab.name)}" referrerpolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin allow-downloads allow-modals"></iframe>` : '<div class="embedded-site-error">رابط الخدمة غير صالح.</div>'}</div><p class="embedding-notice">بعض الخدمات قد تمنع العرض داخل التطبيقات بسياسة حماية خاصة بها؛ لا يفتح النظام هذه المواقع خارج الصفحة.</p></section>`;
 }
 
 function renderHome() {
@@ -517,7 +601,7 @@ function renderHome() {
   });
   const categories = ['الكل', 'المفضلة', ...new Set(state.sites.map((site) => site.category))];
   return `<section class="home-view">
-    <div class="hero-line"><div><p class="eyebrow">مساحة العمل</p><h1>${escapeHtml(state.officeName)}</h1><p class="page-subtitle">${escapeHtml(authSession.account?.ownerName || '')}${authSession.account?.phone ? ` · ${escapeHtml(authSession.account.phone)}` : ''}</p><p class="page-subtitle">كل مواقع الخدمات التي تحتاجها في مكان واحد.</p></div><div class="hero-stat"><span>${state.sites.length}</span><small>موقع محفوظ</small></div></div>
+    <div class="hero-line"><div><p class="eyebrow">مساحة العمل</p><h1>${escapeHtml(state.officeName)}</h1><p class="page-subtitle">${escapeHtml(authSession.account?.ownerName || '')}${authSession.account?.phone ? ` · ${escapeHtml(authSession.account.phone)}` : ''}</p><p class="page-subtitle">كل مواقع الخدمات التي تحتاجها في مكان واحد.</p><a class="download-desktop-btn" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.0.exe" download>${icon('download', 17)} تنزيل برنامج Windows</a></div><div class="hero-stat"><span>${state.sites.length}</span><small>موقع محفوظ</small></div></div>
     <div class="toolbar"><label class="search-box">${icon('search', 18)}<input id="siteSearch" value="${escapeHtml(searchTerm)}" placeholder="ابحث عن موقع أو خدمة" aria-label="ابحث عن موقع أو خدمة"></label><div class="category-chips">${categories.map((category) => `<button class="chip ${categoryFilter === category ? 'selected' : ''}" data-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div></div>
     <div class="section-heading"><div><p class="eyebrow">المواقع المتاحة</p><h2>اختر الخدمة</h2></div><span class="result-count">${filteredSites.length} موقع</span></div>
     ${filteredSites.length ? `<div class="sites-grid">${filteredSites.map(renderSiteCard).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon('search', 28)}</div><h3>لا توجد نتائج</h3><p>جرّب كلمة بحث مختلفة أو أضف موقعًا جديدًا من الإعدادات.</p></div>`}
@@ -549,31 +633,23 @@ function renderSales() {
 
 function renderSettings() {
   const editingSite = state.sites.find((site) => site.id === editingSiteId);
-  return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">اسم المكتب وبيانات صاحبه يديرها مدير النظام.</p></div></div>
-    <div class="settings-grid"><div class="panel office-panel"><div class="panel-heading"><div><p class="eyebrow">بيانات الحساب</p><h2>${escapeHtml(authSession.account?.officeName || state.officeName)}</h2></div></div><p class="helper-text">صاحب المكتب: ${escapeHtml(authSession.account?.ownerName || '—')}</p><p class="helper-text">رقم الهاتف: ${escapeHtml(authSession.account?.phone || '—')}</p><p class="helper-text">اسم الدخول: ${escapeHtml(authSession.account?.username || '—')}</p></div><div class="panel add-site-panel"><div class="panel-heading"><div><p class="eyebrow">دليل المواقع</p><h2>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h2></div>${editingSite ? `<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>` : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة <span class="label-hint">اختياري</span><input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div></div>
+  const requestStatus = clientPasswordRequest?.status === 'pending' ? 'طلب تغيير كلمة المرور قيد مراجعة المدير.' : clientPasswordRequest?.status === 'approved' ? 'وافق المدير على آخر طلب تغيير كلمة المرور.' : clientPasswordRequest?.status === 'rejected' ? 'رفض المدير آخر طلب تغيير كلمة المرور؛ يمكنك إرسال طلب جديد.' : 'تغيير كلمة المرور يحتاج موافقة مدير النظام.';
+  return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">إدارة بيانات المكتب وكلمة المرور ومواقع الخدمات.</p></div></div>
+    <div class="settings-grid"><div class="panel office-panel"><div class="panel-heading"><div><p class="eyebrow">بيانات الحساب</p><h2>${escapeHtml(authSession.account?.officeName || state.officeName)}</h2></div></div><p class="helper-text">صاحب المكتب: ${escapeHtml(authSession.account?.ownerName || '—')}</p><p class="helper-text">رقم الهاتف: ${escapeHtml(authSession.account?.phone || '—')}</p><p class="helper-text">اسم الدخول: ${escapeHtml(authSession.account?.username || '—')}</p><form id="officeNameForm" class="form-grid account-settings-form"><label class="full-span">اسم المكتب<input name="officeName" required maxlength="120" value="${escapeHtml(authSession.account?.officeName || state.officeName)}"></label><button class="primary-btn" type="submit">حفظ اسم المكتب</button></form><hr class="settings-divider"><form id="passwordChangeRequestForm" class="form-grid account-settings-form"><p class="helper-text full-span">${requestStatus}</p><label>كلمة المرور الجديدة<input name="password" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><label>تأكيد كلمة المرور<input name="confirmPassword" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><button class="secondary-btn full-span" type="submit" ${clientPasswordRequest?.status === 'pending' ? 'disabled' : ''}>إرسال طلب تغيير كلمة المرور</button></form></div><div class="panel add-site-panel"><div class="panel-heading"><div><p class="eyebrow">دليل المواقع</p><h2>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h2></div>${editingSite ? `<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>` : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة <span class="label-hint">اختياري</span><input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div></div>
     <div class="panel manage-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المحتوى</p><h2>المواقع المضافة</h2></div><span class="record-count">${state.sites.length}</span></div><div class="manage-list">${state.sites.map((site) => `<div class="manage-row">${imageMarkup(site, 'mini-image')}<div class="record-main"><strong>${escapeHtml(site.name)}</strong><small>${escapeHtml(site.category)}</small></div><div class="manage-actions"><button class="icon-btn" data-edit-site="${escapeHtml(site.id)}" aria-label="تعديل ${escapeHtml(site.name)}">${icon('edit', 17)}</button><button class="icon-btn danger" data-delete-site="${escapeHtml(site.id)}" aria-label="حذف ${escapeHtml(site.name)}">${icon('trash', 17)}</button></div></div>`).join('')}</div></div>
   </section>`;
-}
-
-function renderViewer() {
-  const url = safeUrl(currentSite.url);
-  return `<div class="viewer-shell"><header class="viewer-bar"><button class="viewer-back" data-close-viewer>${icon('back', 20)}<span>العودة إلى الكروت</span></button><div class="viewer-title">${imageMarkup(currentSite, 'viewer-image')}<strong>${escapeHtml(currentSite.name)}</strong></div><div class="viewer-actions"><button class="icon-btn" data-external-viewer aria-label="فتح خارج التطبيق">${icon('external', 18)}</button><button class="icon-btn" data-close-viewer aria-label="إغلاق">${icon('close', 18)}</button></div></header><main class="embedded-site"><div class="viewer-loading">جارٍ فتح الموقع…</div>${url ? `<iframe src="${escapeHtml(url)}" title="${escapeHtml(currentSite.name)}" allow="clipboard-read; clipboard-write; camera; microphone"></iframe>` : `<div class="viewer-error"><h2>الرابط غير صالح</h2><p>عد إلى الإعدادات لتعديل رابط الموقع.</p></div>`}</main></div>`;
 }
 
 function bindViewEvents() {
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
+  document.querySelector('[data-home-tab]')?.addEventListener('click', () => navigate('home'));
+  document.querySelector('[data-print-site]')?.addEventListener('click', () => window.desktopBridge?.printActiveSite?.());
+  document.querySelectorAll('[data-activate-site]').forEach((button) => button.addEventListener('click', () => { activeSiteTabId = button.dataset.activateSite; render(); }));
+  document.querySelectorAll('[data-close-site-tab]').forEach((button) => button.addEventListener('click', () => closeSiteTab(button.dataset.closeSiteTab)));
   document.querySelectorAll('[data-open-site]').forEach((button) => button.addEventListener('click', () => {
     const site = state.sites.find((item) => item.id === button.dataset.openSite);
-    if (site) {
-      if (window.desktopBridge?.openSite) {
-        window.desktopBridge.openSite(site.url, site.name);
-      } else {
-        // مواقع الخدمات الحكومية والتأمين تمنع التضمين داخل iframe عبر CSP/X-Frame-Options.
-        // في المعاينة العادية نفتحها في تبويب مستقل، أما نسخة Electron فتفتح نافذة مستقلة بلا رابط.
-        window.open(site.url, '_blank', 'noopener,noreferrer');
-      }
-    }
+    if (site) openSiteTab(site);
   }));
   document.querySelectorAll('[data-toggle-favorite]').forEach((button) => button.addEventListener('click', (event) => {
     event.stopPropagation();
@@ -601,6 +677,8 @@ function bindViewEvents() {
   document.querySelector('#transactionForm')?.addEventListener('submit', handleTransactionSubmit);
   document.querySelector('#expenseForm')?.addEventListener('submit', handleExpenseSubmit);
   document.querySelector('#siteForm')?.addEventListener('submit', handleSiteSave);
+  document.querySelector('#officeNameForm')?.addEventListener('submit', handleOfficeNameSave);
+  document.querySelector('#passwordChangeRequestForm')?.addEventListener('submit', handlePasswordChangeRequest);
   document.querySelector('[data-cancel-edit]')?.addEventListener('click', () => { editingSiteId = null; render(); });
   document.querySelectorAll('[data-edit-site]').forEach((button) => button.addEventListener('click', () => { editingSiteId = button.dataset.editSite; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
   document.querySelectorAll('[data-delete-site]').forEach((button) => button.addEventListener('click', () => deleteSite(button.dataset.deleteSite)));
@@ -626,6 +704,38 @@ async function handleSiteSave(event) {
   editingSiteId = null;
   showToast(wasEditing ? 'تم تحديث الموقع' : 'تمت إضافة الموقع');
   render();
+}
+
+async function handleOfficeNameSave(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const officeName = String(new FormData(form).get('officeName') || '').trim();
+  if (!officeName) return showToast('أدخل اسم المكتب.', 'error');
+  try {
+    const account = await apiRequest('client/account', { method: 'PATCH', body: { officeName } });
+    authSession.account = { ...authSession.account, ...account };
+    state.officeName = officeName;
+    saveSession(authSession);
+    saveState();
+    showToast('تم تحديث اسم المكتب.');
+    render();
+  } catch (error) { showToast(error.message || 'تعذر حفظ اسم المكتب.', 'error'); }
+}
+
+async function handlePasswordChangeRequest(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const password = String(data.get('password') || '');
+  if (password !== String(data.get('confirmPassword') || '')) return showToast('كلمتا المرور غير متطابقتين.', 'error');
+  try {
+    await apiRequest('client/password-request', { method: 'POST', body: { password } });
+    await refreshClientPasswordRequest();
+    showToast('أُرسل طلب تغيير كلمة المرور إلى المدير للموافقة.');
+    render();
+  } catch (error) {
+    showToast(error.code === 'password_request_pending' ? 'لديك طلب تغيير كلمة مرور قيد المراجعة.' : error.message || 'تعذر إرسال الطلب.', 'error');
+  }
 }
 
 function handleTransactionSubmit(event) {
@@ -686,13 +796,12 @@ function showToast(message, type = 'success') {
   toastTimer = setTimeout(() => toast.remove(), 2600);
 }
 
-document.addEventListener('click', (event) => {
-  const close = event.target.closest('[data-close-viewer]');
-  if (close) { currentSite = null; render(); return; }
-  const external = event.target.closest('[data-external-viewer]');
-  if (external && currentSite) window.open(currentSite.url, '_blank', 'noopener,noreferrer');
+window.addEventListener('hashchange', () => { currentView = getViewFromHash(); activeSiteTabId = null; render(); });
+window.addEventListener('resize', () => syncDesktopSiteViews());
+window.desktopBridge?.onSitePopup?.(({ url, title }) => {
+  const safe = safeUrl(url);
+  if (!safe) return;
+  openSiteTab({ id: uid('popup'), name: String(title || 'صفحة خدمة').slice(0, 120), url: safe, image: '' });
 });
-
-window.addEventListener('hashchange', () => { currentView = getViewFromHash(); currentSite = null; render(); });
 trackPublicVisitor();
 restoreSession();

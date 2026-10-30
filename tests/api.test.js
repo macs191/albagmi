@@ -8,6 +8,10 @@ import adminMetricsRoute from '../api/admin/metrics.js';
 import updateAccountRoute from '../api/admin/accounts/[accountId].js';
 import renewAccountRoute from '../api/admin/accounts/[accountId]/renew.js';
 import clientStateRoute from '../api/client/state.js';
+import clientAccountRoute from '../api/client/account.js';
+import clientPasswordRequestRoute from '../api/client/password-request.js';
+import adminPasswordRequestsRoute from '../api/admin/password-requests.js';
+import reviewPasswordRequestRoute from '../api/admin/password-requests/[requestId].js';
 import { aggregateDailyReport, aggregateMonthlyReport, renderDailyReportHtml, renderMonthlyReportHtml } from '../src/reports.js';
 
 const ENV_KEYS = [
@@ -98,7 +102,7 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
         assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
         return new Response('[]', { status: 200 });
       }
-      if (String(url).includes('/rest/v1/albagmi_site_visitors?select=visitor_id&limit=1')) return new Response('[]', { status: 200 });
+      if (String(url).includes('/rest/v1/albagmi_site_visitors?select=visitor_id&limit=1') || String(url).includes('/rest/v1/albagmi_password_change_requests?select=id&limit=1')) return new Response('[]', { status: 200 });
       throw new Error(`Unexpected test URL: ${url}`);
     }, () => callApi('GET', '/api/health'));
     assert.equal(response.statusCode, 200);
@@ -290,6 +294,114 @@ test('public visit registration stores only a validated random browser UUID', as
   }
 });
 
+test('client password requests are encrypted at rest and only applied after admin approval', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  let savedRequest;
+  let appliedPassword;
+  try {
+    const clientResponse = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_accounts?select=*&auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_password_change_requests?select=id&')) return new Response('[]', { status: 200 });
+      if (target.includes('/rest/v1/albagmi_password_change_requests?select=id,status,created_at')) {
+        savedRequest = JSON.parse(options.body);
+        return new Response(JSON.stringify([{ id: 'request-1', status: 'pending', created_at: new Date().toISOString() }]), { status: 201 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('POST', '/api/client/password-request', { password: 'new-password-secret-987' }, { authorization: 'Bearer client-token' }));
+    assert.equal(clientResponse.statusCode, 201);
+    assert.equal(clientResponse.data.request.status, 'pending');
+    assert.equal(JSON.stringify(savedRequest).includes('new-password-secret-987'), false);
+    assert.ok(savedRequest.password_ciphertext && savedRequest.password_iv && savedRequest.password_tag);
+
+    const admin = await callApi('POST', '/api/admin/login', { password: process.env.ALBAGMI_ADMIN_PASSWORD });
+    const approval = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.includes('/rest/v1/albagmi_password_change_requests?select=*&')) return new Response(JSON.stringify([savedRequest]), { status: 200 });
+      if (target.includes('/auth/v1/admin/users/auth-user-1')) {
+        appliedPassword = JSON.parse(options.body).password;
+        return new Response('{}', { status: 200 });
+      }
+      if (target.includes('/rest/v1/albagmi_password_change_requests?id=eq.request-1')) {
+        const patch = JSON.parse(options.body);
+        assert.equal(patch.password_ciphertext, null);
+        assert.equal(patch.password_iv, null);
+        assert.equal(patch.password_tag, null);
+        return new Response(JSON.stringify([{ id: 'request-1', status: 'approved', reviewed_at: patch.reviewed_at }]), { status: 200 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('POST', '/api/admin/password-requests/request-1', { decision: 'approve' }, { authorization: `Bearer ${admin.data.token}` }));
+    assert.equal(approval.statusCode, 200);
+    assert.equal(approval.data.status, 'approved');
+    assert.equal(appliedPassword, 'new-password-secret-987');
+    assert.equal(JSON.stringify(approval.data).includes('new-password-secret-987'), false);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('client can update only its authenticated office name', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  try {
+    const updated = { ...account, office_name: 'مكتب باسم جديد' };
+    const response = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      if (target.includes('auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_accounts?id=eq.account-1')) {
+        assert.equal(options.method, 'PATCH');
+        assert.deepEqual(JSON.parse(options.body).office_name, 'مكتب باسم جديد');
+        return new Response(JSON.stringify([updated]), { status: 200 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('PATCH', '/api/client/account', { officeName: 'مكتب باسم جديد' }, { authorization: 'Bearer client-token' }));
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.data.officeName, 'مكتب باسم جديد');
+    const deniedField = await withMockFetch(async (url) => {
+      const target = String(url);
+      if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      if (target.includes('auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('PATCH', '/api/client/account', { username: 'other-office' }, { authorization: 'Bearer client-token' }));
+    assert.equal(deniedField.statusCode, 400);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('admin hard delete requires the exact username and deletes the linked Auth user', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  try {
+    const admin = await callApi('POST', '/api/admin/login', { password: process.env.ALBAGMI_ADMIN_PASSWORD });
+    const badConfirmation = await withMockFetch(async (url) => {
+      if (String(url).includes('id=eq.account-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      throw new Error(`Unexpected test URL: ${url}`);
+    }, () => callApi('DELETE', '/api/admin/accounts/account-1', { confirmUsername: 'wrong-name' }, { authorization: `Bearer ${admin.data.token}` }));
+    assert.equal(badConfirmation.statusCode, 400);
+    assert.equal(badConfirmation.data.error, 'delete_confirmation_mismatch');
+
+    let authDeleted = false;
+    const deleted = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.includes('id=eq.account-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      if (target.endsWith('/auth/v1/admin/users/auth-user-1')) {
+        authDeleted = options.method === 'DELETE';
+        return new Response('{}', { status: 200 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('DELETE', '/api/admin/accounts/account-1', { confirmUsername: 'office1' }, { authorization: `Bearer ${admin.data.token}` }));
+    assert.equal(deleted.statusCode, 200);
+    assert.equal(deleted.data.deleted, true);
+    assert.equal(authDeleted, true);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
 test('Vercel rewrites the protected-looking /max route to the SPA entry only', async () => {
   const config = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
   const publicRoutes = JSON.parse(await readFile(new URL('../public/manus-routes.json', import.meta.url), 'utf8'));
@@ -299,7 +411,7 @@ test('Vercel rewrites the protected-looking /max route to the SPA entry only', a
 });
 
 test('Vercel has explicit entry points for every multi-segment API route', () => {
-  for (const route of [adminLoginRoute, adminAccountsRoute, adminMetricsRoute, updateAccountRoute, renewAccountRoute, clientStateRoute]) {
+  for (const route of [adminLoginRoute, adminAccountsRoute, adminMetricsRoute, updateAccountRoute, renewAccountRoute, clientStateRoute, clientAccountRoute, clientPasswordRequestRoute, adminPasswordRequestsRoute, reviewPasswordRequestRoute]) {
     assert.equal(route, handler);
   }
 });

@@ -307,3 +307,52 @@ h3 { margin-bottom: 8px; font-size: 18px; }
   .account-actions { width: 100%; }
   .account-edit-form .primary-btn { grid-column: auto; }
 }
+
+
+/* In-app service tabs: URLs are never rendered in this chrome. */
+.main-content { display: flex; flex-direction: column; min-height: 100vh; }
+.site-tabs-bar { min-height: 52px; display: flex; align-items: stretch; gap: 9px; padding: 6px 15px; direction: rtl; overflow: hidden; background: rgba(8,35,38,.94); border-bottom: 1px solid var(--line); }
+.site-home-tab, .site-tab-select, .site-tab-close { color: var(--muted); background: transparent; }
+.site-home-tab { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; padding: 0 13px; border: 1px solid transparent; border-radius: 9px; font-size: 12px; }
+.site-home-tab:hover, .site-home-tab.selected { color: var(--accent); background: rgba(85,214,173,.08); border-color: rgba(85,214,173,.22); }
+.site-tabs-list { min-width: 0; display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+.site-tab { min-width: 120px; max-width: 210px; height: 38px; display: flex; align-items: center; gap: 3px; padding: 0 5px 0 8px; border: 1px solid transparent; border-radius: 9px; background: rgba(255,255,255,.025); }
+.site-tab.active { color: var(--text); border-color: rgba(85,214,173,.35); background: rgba(85,214,173,.09); }
+.site-tab-select { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 0; text-align: right; }
+.site-tab-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.tab-image { width: 23px; height: 23px; flex: 0 0 23px; margin: 0; border-radius: 6px; box-shadow: none; }
+.tab-image .image-fallback { font-size: 11px; }
+.site-tab-close { width: 25px; height: 25px; flex: 0 0 25px; display: grid; place-items: center; border-radius: 6px; }
+.site-tab-close:hover { color: var(--danger); background: rgba(237,132,127,.12); }
+.embedded-workspace { min-height: 0; flex: 1; display: flex; flex-direction: column; padding: 0 12px 8px; }
+.embedded-workspace-title { min-height: 43px; display: flex; align-items: center; gap: 9px; color: var(--text); font-size: 12px; }
+.embedded-workspace-title .viewer-image { width: 25px; height: 25px; }
+.embedded-workspace-title span { margin-inline-start: auto; color: var(--muted-2); font-size: 10px; }
+.embedded-site-host { position: relative; min-height: 280px; flex: 1; overflow: hidden; background: #fff; border: 1px solid rgba(186,226,216,.15); border-radius: 10px; }
+.embedded-site-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+.embedded-site-error { display: grid; place-items: center; height: 100%; color: #45635e; }
+.embedding-notice { margin: 6px 3px 0; color: var(--muted-2); font-size: 10px; }
+.account-settings-form { margin-top: 18px; }
+.settings-divider { margin: 24px 0; border: 0; border-top: 1px solid var(--line); }
+.download-desktop-btn { display: inline-flex; align-items: center; gap: 8px; margin-top: 17px; padding: 10px 14px; color: #07352f; background: var(--accent); border-radius: 9px; text-decoration: none; font-size: 12px; font-weight: 600; }
+.download-desktop-btn:hover { background: #7be7c5; }
+.danger-btn { min-height: 39px; padding: 0 13px; color: #ffd2ce; background: rgba(237,132,127,.12); border: 1px solid rgba(237,132,127,.28); border-radius: 9px; font: inherit; font-size: 11px; }
+.danger-btn:hover { background: rgba(237,132,127,.2); }
+.password-request-row { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.password-request-row:last-child { border-bottom: 0; }
+.password-request-row strong, .password-request-row small { display: block; }
+.password-request-row strong { color: var(--text); font-size: 13px; }
+.password-request-row small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.request-actions { display: flex; gap: 7px; }
+.request-actions .primary-btn { min-height: 36px; }
+@media (max-width: 680px) {
+  .site-tabs-bar { padding-inline: 7px; }
+  .site-home-tab { width: 43px; justify-content: center; padding: 0; }
+  .site-home-tab span { display: none; }
+  .site-tab { min-width: 105px; max-width: 155px; }
+  .embedded-workspace { padding-inline: 7px; }
+  .embedded-workspace-title span { display: none; }
+  .embedded-site-host { min-height: 65vh; }
+  .password-request-row { align-items: flex-start; flex-direction: column; }
+  .download-desktop-btn { margin-top: 12px; }
+}

@@ -1,8 +1,9 @@
-import { createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual, randomUUID } from 'node:crypto';
 
 const ACCOUNT_TABLE = 'albagmi_accounts';
 const USER_DATA_TABLE = 'albagmi_user_data';
 const VISITOR_TABLE = 'albagmi_site_visitors';
+const PASSWORD_REQUEST_TABLE = 'albagmi_password_change_requests';
 const MAX_STATE_BYTES = 1024 * 1024;
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -418,6 +419,71 @@ async function recordSiteVisitor(body) {
   }, true);
 }
 
+function passwordRequestKey() {
+  return createHash('sha256').update(`albagmi-password-request-v1:${env('ALBAGMI_ADMIN_JWT_SECRET')}`).digest();
+}
+
+function encryptRequestedPassword(password) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', passwordRequestKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(password, 'utf8'), cipher.final()]);
+  return { password_ciphertext: ciphertext.toString('base64url'), password_iv: iv.toString('base64url'), password_tag: cipher.getAuthTag().toString('base64url') };
+}
+
+function decryptRequestedPassword(request) {
+  const decipher = createDecipheriv('aes-256-gcm', passwordRequestKey(), Buffer.from(request.password_iv, 'base64url'));
+  decipher.setAuthTag(Buffer.from(request.password_tag, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(request.password_ciphertext, 'base64url')), decipher.final()]).toString('utf8');
+}
+
+async function createPasswordChangeRequest(account, password) {
+  if (typeof password !== 'string' || password.length < 8 || password.length > 1024) throw new HttpError(400, 'invalid_password');
+  const { data: pending } = await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}${query('id', { auth_user_id: `eq.${account.auth_user_id}`, status: 'eq.pending', limit: '1' })}`, {}, true);
+  if (Array.isArray(pending) && pending.length) throw new HttpError(409, 'password_request_pending');
+  const secret = encryptRequestedPassword(password);
+  const created = await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}?select=id,status,created_at`, {
+    method: 'POST', headers: { Prefer: 'return=representation' },
+    body: JSON.stringify({ id: randomUUID(), account_id: account.id, auth_user_id: account.auth_user_id, status: 'pending', ...secret }),
+  }, true);
+  const row = Array.isArray(created.data) ? created.data[0] : created.data;
+  if (!row) throw new HttpError(502, 'password_request_failed');
+  return { id: row.id, status: row.status, createdAt: row.created_at };
+}
+
+async function getClientPasswordRequest(userId) {
+  const { data } = await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}${query('id,status,created_at,reviewed_at', { auth_user_id: `eq.${userId}`, order: 'created_at.desc', limit: '1' })}`, {}, true);
+  const row = Array.isArray(data) ? data[0] : null;
+  return row ? { id: row.id, status: row.status, createdAt: row.created_at, reviewedAt: row.reviewed_at } : null;
+}
+
+async function listPasswordChangeRequests() {
+  const { data } = await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}${query('id,account_id,status,created_at,reviewed_at,albagmi_accounts(username,office_name,owner_name,phone)', { status: 'eq.pending', order: 'created_at.asc', limit: '500' })}`, {}, true);
+  return Array.isArray(data) ? data.map((row) => ({ id: row.id, accountId: row.account_id, status: row.status, createdAt: row.created_at, account: row.albagmi_accounts })) : [];
+}
+
+async function reviewPasswordChangeRequest(requestId, decision) {
+  if (!['approve', 'reject'].includes(decision)) throw new HttpError(400, 'invalid_decision');
+  const { data } = await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}${query('*', { id: `eq.${requestId}`, status: 'eq.pending', limit: '1' })}`, {}, true);
+  const request = Array.isArray(data) ? data[0] : null;
+  if (!request) throw new HttpError(404, 'password_request_not_found');
+  if (decision === 'approve') {
+    let password;
+    try { password = decryptRequestedPassword(request); }
+    catch { throw new HttpError(500, 'password_request_decryption_failed'); }
+    await supabaseFetch(`/auth/v1/admin/users/${encodeURIComponent(request.auth_user_id)}`, {
+      method: 'PUT', headers: { Authorization: `Bearer ${env('SUPABASE_SERVICE_ROLE_KEY')}` },
+      body: JSON.stringify({ password }),
+    }, true);
+  }
+  const updated = await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}?id=eq.${encodeURIComponent(requestId)}&status=eq.pending&select=id,status,reviewed_at`, {
+    method: 'PATCH', headers: { Prefer: 'return=representation' },
+    body: JSON.stringify({ status: decision === 'approve' ? 'approved' : 'rejected', reviewed_at: new Date().toISOString(), password_ciphertext: null, password_iv: null, password_tag: null }),
+  }, true);
+  const row = Array.isArray(updated.data) ? updated.data[0] : null;
+  if (!row) throw new HttpError(409, 'password_request_already_reviewed');
+  return { id: row.id, status: row.status, reviewedAt: row.reviewed_at };
+}
+
 function pathSegments(req) {
   let path = req.url || '/';
   try { path = new URL(path, 'http://localhost').pathname; } catch { /* use original path */ }
@@ -433,7 +499,7 @@ function setCors(req, res) {
     res.setHeader('Access-Control-Allow-Origin', allow.includes('*') ? '*' : origin);
     res.setHeader('Vary', 'Origin');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   res.setHeader('Access-Control-Max-Age', '86400');
 }
@@ -456,6 +522,8 @@ export default async function handler(req, res) {
       catch { return json(res, 503, { ok: false, error: 'user_data_table_unavailable' }); }
       try { await supabaseFetch(`/rest/v1/${VISITOR_TABLE}${query('visitor_id', { limit: '1' })}`, {}, true); }
       catch { return json(res, 503, { ok: false, error: 'analytics_table_unavailable' }); }
+      try { await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}${query('id', { limit: '1' })}`, {}, true); }
+      catch { return json(res, 503, { ok: false, error: 'password_request_table_unavailable' }); }
       return json(res, 200, { ok: true, api: 'ready', supabase: 'connected' });
     }
     if (segments.length === 1 && segments[0] === 'visit' && method === 'POST') {
@@ -512,6 +580,39 @@ export default async function handler(req, res) {
       await requireAdmin(req);
       return json(res, 200, await getAdminMetrics());
     }
+    if (segments.length === 2 && segments[0] === 'admin' && segments[1] === 'password-requests' && method === 'GET') {
+      await requireAdmin(req);
+      return json(res, 200, await listPasswordChangeRequests());
+    }
+    if (segments.length === 3 && segments[0] === 'admin' && segments[1] === 'password-requests' && method === 'POST') {
+      await requireAdmin(req);
+      const body = parseBody(req);
+      return json(res, 200, await reviewPasswordChangeRequest(segments[2], body.decision));
+    }
+    if (segments.length === 2 && segments[0] === 'client' && segments[1] === 'account' && method === 'PATCH') {
+      const { account } = await requireClient(req);
+      const body = parseBody(req);
+      if (Object.keys(body).some((key) => key !== 'officeName') || typeof body.officeName !== 'string') throw new HttpError(400, 'invalid_account_field');
+      const officeName = body.officeName.trim();
+      if (officeName.length < 1 || officeName.length > 120) throw new HttpError(400, 'invalid_officeName');
+      const updated = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}?id=eq.${encodeURIComponent(account.id)}&select=*`, {
+        method: 'PATCH', headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({ office_name: officeName, updated_at: new Date().toISOString() }),
+      }, true);
+      const row = Array.isArray(updated.data) ? updated.data[0] : null;
+      if (!row) throw new HttpError(404, 'account_not_found');
+      return json(res, 200, accountProfile(row));
+    }
+    if (segments.length === 2 && segments[0] === 'client' && segments[1] === 'password-request' && method === 'GET') {
+      const { userId } = await requireClient(req);
+      return json(res, 200, { request: await getClientPasswordRequest(userId) });
+    }
+    if (segments.length === 2 && segments[0] === 'client' && segments[1] === 'password-request' && method === 'POST') {
+      const { account } = await requireClient(req);
+      const body = parseBody(req);
+      if (Object.keys(body).some((key) => key !== 'password')) throw new HttpError(400, 'invalid_body');
+      return json(res, 201, { request: await createPasswordChangeRequest(account, body.password) });
+    }
     if (segments[0] === 'admin' && segments[1] === 'accounts') {
       await requireAdmin(req);
       if (segments.length === 2 && method === 'GET') {
@@ -520,6 +621,16 @@ export default async function handler(req, res) {
       }
       if (segments.length === 2 && method === 'POST') return json(res, 201, await createAccount(parseBody(req)));
       if (segments.length === 3 && method === 'PUT') return json(res, 200, await updateAccount(segments[2], parseBody(req)));
+      if (segments.length === 3 && method === 'DELETE') {
+        const body = parseBody(req);
+        const current = await findAccountById(segments[2]);
+        if (!current) throw new HttpError(404, 'account_not_found');
+        if (body.confirmUsername !== current.username) throw new HttpError(400, 'delete_confirmation_mismatch');
+        await supabaseFetch(`/auth/v1/admin/users/${encodeURIComponent(current.auth_user_id)}`, {
+          method: 'DELETE', headers: { Authorization: `Bearer ${env('SUPABASE_SERVICE_ROLE_KEY')}` },
+        }, true);
+        return json(res, 200, { ok: true, deleted: true });
+      }
       if (segments.length === 4 && segments[3] === 'renew' && method === 'POST') {
         const body = parseBody(req);
         const days = positiveDays(body.days);
