@@ -47,6 +47,9 @@ let reportDialogStart = todayKey();
 let reportDialogEnd = todayKey();
 let recordToDelete = null;
 let toastTimer;
+let desktopSiteResizeObserver;
+let observedDesktopSiteHost = null;
+let desktopSyncFrame = 0;
 
 function loadSession() {
   try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null'); } catch { return null; }
@@ -298,11 +301,29 @@ function render() {
 function syncDesktopSiteViews() {
   if (!window.desktopBridge?.syncSiteTabs) return;
   const host = document.querySelector('#embeddedSiteHost');
+  if (host !== observedDesktopSiteHost) {
+    if (observedDesktopSiteHost) desktopSiteResizeObserver?.unobserve(observedDesktopSiteHost);
+    observedDesktopSiteHost = host;
+    if (host) desktopSiteResizeObserver?.observe(host);
+  }
   if (!host) { window.desktopBridge.syncSiteTabs(openSiteTabs, null, null); return; }
   const rect = host.getBoundingClientRect();
   window.desktopBridge.syncSiteTabs(openSiteTabs, activeSiteTabId, {
     x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height),
   });
+}
+
+function scheduleDesktopSiteSync() {
+  if (!window.desktopBridge?.syncSiteTabs || desktopSyncFrame) return;
+  desktopSyncFrame = requestAnimationFrame(() => {
+    desktopSyncFrame = 0;
+    syncDesktopSiteViews();
+  });
+}
+
+if (window.desktopBridge?.syncSiteTabs) {
+  if (typeof ResizeObserver !== 'undefined') desktopSiteResizeObserver = new ResizeObserver(scheduleDesktopSiteSync);
+  window.addEventListener('resize', scheduleDesktopSiteSync, { passive: true });
 }
 
 function openSiteTab(site) {
@@ -581,7 +602,7 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        <a class="nav-item sidebar-download" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.3-Setup.exe" target="_blank" rel="noopener noreferrer">${icon('download')}<span>تثبيت Windows</span></a>
+        <a class="nav-item sidebar-download" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.4-Setup.exe" target="_blank" rel="noopener noreferrer">${icon('download')}<span>تثبيت Windows</span></a>
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>

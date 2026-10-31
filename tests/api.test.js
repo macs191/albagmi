@@ -593,14 +593,16 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.3');
-  assert.match(appSource, /ServiceHub-Desktop-0\.1\.3-Setup\.exe/);
+  assert.equal(packageJson.version, '0.1.4');
+  assert.match(appSource, /ServiceHub-Desktop-0\.1\.4-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
   assert.equal(packageJson.build.nsis.createDesktopShortcut, true);
   assert.match(appSource, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);
   assert.match(appSource, /syncSiteTabs\(openSiteTabs, null, null\)/);
+  assert.match(appSource, /new ResizeObserver\(scheduleDesktopSiteSync\)/);
+  assert.match(appSource, /addEventListener\('resize', scheduleDesktopSiteSync/);
   assert.match(electronMain, /persist:servicehub-sites/);
   assert.match(electronMain, /did-fail-load/);
   assert.match(electronMain, /تعذر الاتصال بموقع الخدمة/);
