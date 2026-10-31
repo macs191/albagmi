@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to build and publish, for example v0.1.7'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -44,7 +50,8 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content package.json | ConvertFrom-Json).version
-          $tag = $env:GITHUB_REF_NAME
+          $tag = $env:RELEASE_TAG
+          if (-not $tag) { $tag = $env:GITHUB_REF_NAME }
           $installer = "release/ServiceHub-Desktop-$version-Setup.exe"
           $blockmap = "$installer.blockmap"
           $metadata = "release/latest.yml"
@@ -57,4 +64,5 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Could not upload all update assets to $tag" }
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag }}
           GH_TOKEN: ${{ github.token }}
