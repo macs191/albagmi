@@ -529,6 +529,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
+  assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
   assert.equal(packageJson.build.nsis.createDesktopShortcut, true);
   assert.match(appSource, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);

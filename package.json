@@ -11,7 +11,7 @@
     "test": "node --test",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
     "desktop": "pnpm vite build --base=./ && electron .",
-    "package:win": "pnpm vite build --base=./ && electron-builder --win nsis"
+    "package:win": "pnpm vite build --base=./ && electron-builder --win nsis --publish never"
   },
   "devDependencies": {
     "electron": "^36.3.2",
