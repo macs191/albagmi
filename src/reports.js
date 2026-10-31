@@ -69,6 +69,31 @@ export function aggregateMonthlyReport(monthKey, transactions = [], expenses = [
   };
 }
 
+export function aggregateRangeReport(startKey, endKey, transactions = [], expenses = []) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startKey || '')) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endKey || '')) || startKey > endKey) throw new TypeError('invalid_report_range');
+  const start = Date.parse(`${startKey}T12:00:00Z`);
+  const end = Date.parse(`${endKey}T12:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end - start > 3660 * 86400000) throw new RangeError('report_range_too_large');
+  const byDay = new Map();
+  const getDay = (key) => {
+    if (!byDay.has(key)) byDay.set(key, { dateKey: key, transactions: [], expenses: [] });
+    return byDay.get(key);
+  };
+  for (const item of transactions) if (item.dateKey >= startKey && item.dateKey <= endKey) getDay(item.dateKey).transactions.push(item);
+  for (const item of expenses) if (item.dateKey >= startKey && item.dateKey <= endKey) getDay(item.dateKey).expenses.push(item);
+  for (let timestamp = start; timestamp <= end; timestamp += 86400000) getDay(new Date(timestamp).toISOString().slice(0, 10));
+  const days = [...byDay.values()].sort((a, b) => a.dateKey.localeCompare(b.dateKey)).map((day) => {
+    const salesTotal = totalOf(day.transactions);
+    const expensesTotal = totalOf(day.expenses);
+    return { ...day, salesTotal, expensesTotal, net: salesTotal - expensesTotal };
+  });
+  const allTransactions = days.flatMap((day) => day.transactions);
+  const allExpenses = days.flatMap((day) => day.expenses);
+  const salesTotal = totalOf(allTransactions);
+  const expensesTotal = totalOf(allExpenses);
+  return { startKey, endKey, days, transactions: allTransactions, expenses: allExpenses, salesTotal, expensesTotal, net: salesTotal - expensesTotal };
+}
+
 function reportDocument({ title, officeName, subtitle, content, landscape = false }) {
   const printedAt = new Intl.DateTimeFormat('ar-SA-u-ca-gregory', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date());
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>
@@ -126,6 +151,18 @@ export function renderMonthlyReportHtml({ officeName, report }) {
     : emptyRow(6, 'لا توجد مبيعات أو مصروفات مسجلة في هذا الشهر.');
   const content = `<section class="metrics">${metric('إجمالي مبيعات الشهر', formatMoney(report.salesTotal))}${metric('إجمالي مصروفات الشهر', formatMoney(report.expensesTotal))}${metric('صافي الشهر', formatMoney(report.net))}</section><p class="muted">الشهر: ${escapeHtml(formatMonthKey(report.monthKey))} · عدد المعاملات: ${formatCount(report.transactionCount)} · عدد المصروفات: ${formatCount(report.expenseCount)}</p><h2>ملخص كل يوم</h2><table><thead><tr><th>اليوم</th><th>عدد المبيعات</th><th>إجمالي المبيعات</th><th>عدد المصروفات</th><th>إجمالي المصروفات</th><th>الصافي</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td>إجمالي الشهر</td><td>${formatCount(report.transactionCount)}</td><td class="amount">${escapeHtml(formatMoney(report.salesTotal))}</td><td>${formatCount(report.expenseCount)}</td><td class="amount">${escapeHtml(formatMoney(report.expensesTotal))}</td><td class="amount">${escapeHtml(formatMoney(report.net))}</td></tr></tfoot></table>`;
   return reportDocument({ title: 'التقرير الشهري', officeName, subtitle: `ملخص شهر ${formatMonthKey(report.monthKey)}`, content, landscape: true });
+}
+
+export function renderRangeReportHtml({ officeName, report }) {
+  const saleRows = report.transactions.length
+    ? report.transactions.map((item, index) => `<tr><td>${formatCount(index + 1)}</td><td>${escapeHtml(item.customer || '—')}</td><td>${escapeHtml(item.siteName || '—')}</td><td>${escapeHtml(formatDateKey(item.dateKey))}</td><td>${escapeHtml(formatTime(item.createdAt))}</td><td class="amount">${escapeHtml(formatMoney(item.amount))}</td></tr>`).join('')
+    : emptyRow(6, 'لا توجد معاملات في الفترة المحددة.');
+  const expenseRows = report.expenses.length
+    ? report.expenses.map((item, index) => `<tr><td>${formatCount(index + 1)}</td><td>${escapeHtml(item.description || '—')}</td><td>${escapeHtml(formatDateKey(item.dateKey))}</td><td>${escapeHtml(formatTime(item.createdAt))}</td><td class="amount">${escapeHtml(formatMoney(item.amount))}</td></tr>`).join('')
+    : emptyRow(5, 'لا توجد مصروفات في الفترة المحددة.');
+  const dayRows = report.days.map((day) => `<tr><td>${escapeHtml(formatDateKey(day.dateKey))}</td><td>${formatCount(day.transactions.length)}</td><td class="amount">${escapeHtml(formatMoney(day.salesTotal))}</td><td>${formatCount(day.expenses.length)}</td><td class="amount">${escapeHtml(formatMoney(day.expensesTotal))}</td><td class="amount">${escapeHtml(formatMoney(day.net))}</td></tr>`).join('');
+  const content = `<section class="metrics">${metric('إجمالي المبيعات', formatMoney(report.salesTotal))}${metric('إجمالي المصروفات', formatMoney(report.expensesTotal))}${metric('صافي الفترة', formatMoney(report.net))}</section><p class="muted">من ${escapeHtml(formatDateKey(report.startKey))} إلى ${escapeHtml(formatDateKey(report.endKey))} · عدد المعاملات: ${formatCount(report.transactions.length)} · عدد المصروفات: ${formatCount(report.expenses.length)}</p><h2>ملخص الأيام</h2><table><thead><tr><th>اليوم</th><th>عدد المبيعات</th><th>إجمالي المبيعات</th><th>عدد المصروفات</th><th>إجمالي المصروفات</th><th>الصافي</th></tr></thead><tbody>${dayRows}</tbody></table><h2>تفاصيل كل المعاملات</h2><table><thead><tr><th>#</th><th>العميل</th><th>البند</th><th>التاريخ</th><th>الوقت</th><th>القيمة</th></tr></thead><tbody>${saleRows}</tbody><tfoot><tr><td colspan="5">إجمالي المبيعات</td><td class="amount">${escapeHtml(formatMoney(report.salesTotal))}</td></tr></tfoot></table><h2>تفاصيل كل المصروفات</h2><table><thead><tr><th>#</th><th>البيان</th><th>التاريخ</th><th>الوقت</th><th>القيمة</th></tr></thead><tbody>${expenseRows}</tbody><tfoot><tr><td colspan="4">إجمالي المصروفات</td><td class="amount">${escapeHtml(formatMoney(report.expensesTotal))}</td></tr></tfoot></table>`;
+  return reportDocument({ title: 'تقرير المبيعات والمصروفات للفترة', officeName, subtitle: `من ${formatDateKey(report.startKey)} إلى ${formatDateKey(report.endKey)}`, content, landscape: true });
 }
 
 export function openPrintWindow(html) {

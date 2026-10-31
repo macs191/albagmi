@@ -1,5 +1,5 @@
 import './styles.css';
-import { aggregateDailyReport, aggregateMonthlyReport, openPrintWindow, renderDailyReportHtml, renderMonthlyReportHtml } from './reports.js';
+import { aggregateDailyReport, aggregateRangeReport, openPrintWindow, renderDailyReportHtml, renderRangeReportHtml } from './reports.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -42,6 +42,10 @@ let categoryFilter = 'الكل';
 let selectedSalesDate = todayKey();
 let selectedReportMonth = todayKey().slice(0, 7);
 let editingSiteId = null;
+let reportDialogMode = null;
+let reportDialogStart = todayKey();
+let reportDialogEnd = todayKey();
+let recordToDelete = null;
 let toastTimer;
 
 function loadSession() {
@@ -161,18 +165,21 @@ function loadState() {
   }
 }
 
-function saveState() {
+function saveState(deletionPassword, immediate = false) {
   localStorage.setItem(userStateCacheKey(), JSON.stringify(state));
   if (authSession?.role !== 'client') return;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(async () => {
+  const sync = async () => {
     try {
-      await apiRequest('client/state', { method: 'PUT', body: { appState: state } });
+      await apiRequest('client/state', { method: 'PUT', body: { appState: state, ...(typeof deletionPassword === 'string' ? { deletionPassword } : {}) } });
     } catch (error) {
+      if (typeof deletionPassword === 'string' || immediate) throw error;
       if (error.code === 'subscription_locked') logout('تم إيقاف الحساب لانتهاء مهلة التجديد. تواصل مع المدير لتجديد الاشتراك.');
       else showToast('تعذر مزامنة البيانات مع Supabase. تحقق من الاتصال.', 'error');
     }
-  }, 350);
+  };
+  if (typeof deletionPassword === 'string' || immediate) return sync();
+  syncTimer = setTimeout(sync, 350);
 }
 
 function getViewFromHash() {
@@ -569,18 +576,20 @@ function renderShell() {
         <div class="brand-mark">SH</div>
         <div><strong>Service Hub</strong><span>مركز الخدمات</span></div>
       </div>
+      <section class="sidebar-office"><strong>${escapeHtml(authSession.account?.officeName || state.officeName)}</strong><span>${escapeHtml(authSession.account?.ownerName || '')}</span></section>
       <nav class="main-nav" aria-label="التنقل الرئيسي">
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
+        <a class="nav-item sidebar-download" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.3-Setup.exe" target="_blank" rel="noopener noreferrer">${icon('download')}<span>تثبيت Windows</span></a>
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>`}
     </main>
-  </div>`;
+  </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
 
 function renderSiteTabsBar() {
@@ -591,7 +600,7 @@ function renderActiveSiteTab() {
   const tab = openSiteTabs.find((item) => item.id === activeSiteTabId);
   if (!tab) { activeSiteTabId = null; return `<div class="page-container">${renderHome()}</div>`; }
   const url = safeUrl(tab.url);
-  return `<section class="embedded-workspace"><div class="embedded-workspace-title">${imageMarkup(tab, 'viewer-image')}<strong>${escapeHtml(tab.name)}</strong><span>الموقع داخل النظام · لا يظهر الرابط</span>${window.desktopBridge?.printActiveSite ? `<button class="icon-btn site-print-button" data-print-site aria-label="طباعة الصفحة" title="طباعة الصفحة">${icon('receipt', 17)}</button>` : ''}</div><div id="embeddedSiteHost" class="embedded-site-host">${window.desktopBridge?.syncSiteTabs ? '' : url ? `<iframe class="embedded-site-frame" src="${escapeHtml(url)}" title="${escapeHtml(tab.name)}" referrerpolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin allow-downloads allow-modals"></iframe>` : '<div class="embedded-site-error">رابط الخدمة غير صالح.</div>'}</div><p class="embedding-notice">إذا ظهرت رسالة «لا يوجد اتصال» أو صفحة فارغة، فقد يكون الموقع يمنع تضمينه داخل إطار وفق سياسة الحماية لديه. هذا المنع يصدر من الموقع نفسه ولا يمكن تجاوزه بأمان؛ لا يفتح النظام المواقع خارج الصفحة.</p></section>`;
+  return `<section class="embedded-workspace"><div id="embeddedSiteHost" class="embedded-site-host">${window.desktopBridge?.syncSiteTabs ? '' : url ? `<iframe class="embedded-site-frame" src="${escapeHtml(url)}" title="${escapeHtml(tab.name)}" referrerpolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin allow-downloads allow-modals"></iframe>` : '<div class="embedded-site-error">رابط الخدمة غير صالح.</div>'}</div></section>`;
 }
 
 function renderHome() {
@@ -602,9 +611,8 @@ function renderHome() {
   });
   const categories = ['الكل', 'المفضلة', ...new Set(state.sites.map((site) => site.category))];
   return `<section class="home-view">
-    <div class="hero-line"><div><p class="eyebrow">مساحة العمل</p><h1>${escapeHtml(state.officeName)}</h1><p class="page-subtitle">${escapeHtml(authSession.account?.ownerName || '')}${authSession.account?.phone ? ` · ${escapeHtml(authSession.account.phone)}` : ''}</p><p class="page-subtitle">كل مواقع الخدمات التي تحتاجها في مكان واحد.</p><a class="download-desktop-btn" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.2-Setup.exe" download>${icon('download', 17)} تثبيت برنامج Windows</a></div><div class="hero-stat"><span>${state.sites.length}</span><small>موقع محفوظ</small></div></div>
     <div class="toolbar"><label class="search-box">${icon('search', 18)}<input id="siteSearch" value="${escapeHtml(searchTerm)}" placeholder="ابحث عن موقع أو خدمة" aria-label="ابحث عن موقع أو خدمة"></label><div class="category-chips">${categories.map((category) => `<button class="chip ${categoryFilter === category ? 'selected' : ''}" data-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div></div>
-    <div class="section-heading"><div><p class="eyebrow">المواقع المتاحة</p><h2>اختر الخدمة</h2></div><span class="result-count">${filteredSites.length} موقع</span></div>
+    <div class="section-heading"><div><h2>المواقع المتاحة</h2></div></div>
     ${filteredSites.length ? `<div class="sites-grid">${filteredSites.map(renderSiteCard).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon('search', 28)}</div><h3>لا توجد نتائج</h3><p>جرّب كلمة بحث مختلفة أو أضف موقعًا جديدًا من الإعدادات.</p></div>`}
   </section>`;
 }
@@ -625,18 +633,78 @@ function renderSales() {
   const net = salesTotal - expensesTotal;
   return `<section class="sales-view">
     <div class="view-title-row"><div><p class="eyebrow">الحسابات اليومية</p><h1>المبيعات والمصروفات</h1><p class="page-subtitle">سجّل معاملاتك وتابع صافي اليوم في لحظة.</p></div><label class="date-picker">${icon('calendar', 17)}<span>تصفية حسب اليوم</span><input id="salesDate" type="date" value="${selectedSalesDate === 'all' ? todayKey() : selectedSalesDate}"></label></div>
-    <div class="panel report-tools"><div class="report-description"><p class="eyebrow">التقارير والطباعة</p><h2>تقارير المكتب</h2><p class="helper-text">اطبع تقرير اليوم المحدد أو ملخص الشهر على ورقة A4.</p></div><div class="report-actions"><button class="secondary-btn" id="printDailyReport" type="button">طباعة التقرير اليومي A4</button><label class="report-month">شهر التقرير<input id="reportMonth" type="month" value="${selectedReportMonth}"></label><button class="primary-btn" id="printMonthlyReport" type="button">طباعة التقرير الشهري A4</button></div></div>
+    <div class="panel report-tools"><div class="report-description"><p class="eyebrow">التقارير والطباعة</p><h2>تقارير المكتب</h2><p class="helper-text">راجع السجلات وحدد اليوم أو الفترة قبل الطباعة على ورقة A4.</p></div><div class="report-actions"><button class="secondary-btn" id="printDailyReport" type="button">التقرير اليومي A4</button><label class="report-month">شهر البداية<input id="reportMonth" type="month" value="${selectedReportMonth}"></label><button class="primary-btn" id="printMonthlyReport" type="button">التقرير الشهري / فترة A4</button></div></div>
     <div class="summary-grid"><div class="summary-card sales"><span class="summary-icon">${icon('receipt')}</span><div><small>إجمالي المعاملات</small><strong>${formatMoney(salesTotal)}</strong></div></div><div class="summary-card expense"><span class="summary-icon">${icon('wallet')}</span><div><small>إجمالي المصروفات</small><strong>${formatMoney(expensesTotal)}</strong></div></div><div class="summary-card net"><span class="summary-icon">${icon('sales')}</span><div><small>صافي اليوم</small><strong>${formatMoney(net)}</strong></div></div></div>
-    <div class="sales-layout"><div class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">إضافة جديدة</p><h2>تسجيل معاملة</h2></div><span class="panel-index">01</span></div><form id="transactionForm" class="form-grid"><label>اسم العميل<input name="customer" required placeholder="مثال: عبدالله محمد"></label><label>نوع الخدمة<select name="siteId" required>${state.sites.length ? state.sites.map((site) => `<option value="${escapeHtml(site.id)}">${escapeHtml(site.name)}</option>`).join('') : '<option value="">أضف خدمة من الإعدادات أولًا</option>'}</select></label><label>سعر المعاملة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="primary-btn" type="submit">${icon('plus', 17)} تسجيل المعاملة</button></form></div><div class="panel form-panel expense-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المصاريف</p><h2>تسجيل مصروف</h2></div><span class="panel-index">02</span></div><form id="expenseForm" class="form-grid"><label>نوع المصروف<input name="description" required placeholder="مثال: طعام، وقود، شحن"></label><label>القيمة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="secondary-btn" type="submit">${icon('plus', 17)} إضافة المصروف</button></form></div></div>
+    <div class="sales-layout"><div class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">إضافة جديدة</p><h2>تسجيل معاملة</h2></div><span class="panel-index">01</span></div><form id="transactionForm" class="form-grid"><label>اسم العميل<input name="customer" required placeholder="مثال: عبدالله محمد"></label><label>نوع الخدمة<select id="transactionSiteSelect" name="siteId" required><option value="">اختر نوع المعاملة</option>${state.sites.map((site) => `<option value="${escapeHtml(site.id)}">${escapeHtml(site.name)}</option>`).join('')}<option value="__custom__">إضافة بند يدوياً…</option></select></label><label id="customServiceField" class="full-span" hidden>اسم البند اليدوي<input name="customServiceName" maxlength="120" placeholder="اكتب نوع المعاملة"></label><label>سعر المعاملة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="primary-btn" type="submit">${icon('plus', 17)} تسجيل المعاملة</button></form></div><div class="panel form-panel expense-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المصاريف</p><h2>تسجيل مصروف</h2></div><span class="panel-index">02</span></div><form id="expenseForm" class="form-grid"><label>نوع المصروف<input name="description" required placeholder="مثال: طعام، وقود، شحن"></label><label>القيمة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="secondary-btn" type="submit">${icon('plus', 17)} إضافة المصروف</button></form></div></div>
     <div class="records-layout"><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">الحركة المالية</p><h2>المعاملات</h2></div><span class="record-count">${transactions.length}</span></div>${transactions.length ? `<div class="records-list">${transactions.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar">${escapeHtml(item.customer.trim().slice(0, 1))}</span><div class="record-main"><strong>${escapeHtml(item.customer)}</strong><small>${escapeHtml(item.siteName)} · ${formatDateTime(item.createdAt)}</small></div><b class="amount-positive">+ ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="transaction:${item.id}" aria-label="حذف المعاملة">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد معاملات في التاريخ المحدد.</div>`}</div><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">المصروفات</p><h2>المصاريف اليومية</h2></div><span class="record-count">${expenses.length}</span></div>${expenses.length ? `<div class="records-list">${expenses.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar expense-avatar">${icon('wallet', 17)}</span><div class="record-main"><strong>${escapeHtml(item.description)}</strong><small>${formatDateTime(item.createdAt)}</small></div><b class="amount-negative">- ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="expense:${item.id}" aria-label="حذف المصروف">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد مصروفات في التاريخ المحدد.</div>`}</div></div>
   </section>`;
+}
+
+function renderReportDialog() {
+  const report = aggregateRangeReport(reportDialogStart, reportDialogMode === 'daily' ? reportDialogStart : reportDialogEnd, state.transactions, state.expenses);
+  const records = [
+    ...report.transactions.map((item) => ({ kind: 'sale', dateKey: item.dateKey, createdAt: item.createdAt, title: item.customer || 'عميل', detail: item.siteName || 'معاملة', amount: Number(item.amount || 0) })),
+    ...report.expenses.map((item) => ({ kind: 'expense', dateKey: item.dateKey, createdAt: item.createdAt, title: item.description || 'مصروف', detail: 'مصروف', amount: -Number(item.amount || 0) }))
+  ].sort((a, b) => `${a.dateKey}${a.createdAt || ''}`.localeCompare(`${b.dateKey}${b.createdAt || ''}`));
+  const recordRows = records.length ? records.map((item) => `<div class="report-record-row"><span class="report-record-type ${item.kind}">${item.kind === 'sale' ? 'مبيعة' : 'مصروف'}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)} · ${escapeHtml(item.dateKey)} · ${escapeHtml(item.createdAt ? formatDateTime(item.createdAt) : '')}</small></div><b class="${item.amount >= 0 ? 'amount-positive' : 'amount-negative'}">${item.amount >= 0 ? '+' : '−'} ${formatMoney(Math.abs(item.amount))}</b></div>`).join('') : '<div class="small-empty">لا توجد سجلات في الفترة المحددة.</div>';
+  const dateFields = reportDialogMode === 'daily'
+    ? `<label>يوم التقرير<input id="reportDialogStart" type="date" required value="${escapeHtml(reportDialogStart)}"></label>`
+    : `<label>من تاريخ<input id="reportDialogStart" type="date" required value="${escapeHtml(reportDialogStart)}"></label><label>إلى تاريخ<input id="reportDialogEnd" type="date" required value="${escapeHtml(reportDialogEnd)}"></label>`;
+  return `<div class="modal-backdrop" data-report-backdrop><section class="modal-card report-modal" role="dialog" aria-modal="true" aria-labelledby="reportDialogTitle"><header class="modal-heading"><div><p class="eyebrow">معاينة السجلات</p><h2 id="reportDialogTitle">${reportDialogMode === 'daily' ? 'التقرير اليومي' : 'تقرير الشهر / الفترة'}</h2></div><button type="button" class="icon-btn" data-close-report aria-label="إغلاق">${icon('close', 18)}</button></header><div class="report-dialog-filters">${dateFields}</div><div class="report-dialog-summary"><div><small>المبيعات</small><strong>${formatMoney(report.salesTotal)}</strong></div><div><small>المصروفات</small><strong>${formatMoney(report.expensesTotal)}</strong></div><div><small>الصافي</small><strong>${formatMoney(report.net)}</strong></div></div><p class="report-dialog-count">${records.length} سجل — هذه القائمة ستظهر في التقرير المطبوع.</p><div class="report-dialog-records">${recordRows}</div><footer class="modal-actions"><button type="button" class="ghost-btn" data-close-report>إلغاء</button><button type="button" class="primary-btn" id="confirmPrintReport">${icon('receipt', 17)} طباعة التقرير A4</button></footer></section></div>`;
+}
+
+function openReportDialog(mode) {
+  reportDialogMode = mode;
+  if (mode === 'daily') {
+    reportDialogStart = selectedSalesDate && selectedSalesDate !== 'all' ? selectedSalesDate : todayKey();
+    reportDialogEnd = reportDialogStart;
+  } else {
+    const [year, month] = selectedReportMonth.split('-').map(Number);
+    reportDialogStart = `${selectedReportMonth}-01`;
+    reportDialogEnd = `${selectedReportMonth}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`;
+  }
+  render();
+}
+
+function closeReportDialog() {
+  reportDialogMode = null;
+  render();
+}
+
+function printSelectedReport() {
+  const officeName = authSession.account?.officeName || state.officeName;
+  const html = reportDialogMode === 'daily'
+    ? renderDailyReportHtml({ officeName, report: aggregateDailyReport(reportDialogStart, state.transactions, state.expenses) })
+    : renderRangeReportHtml({ officeName, report: aggregateRangeReport(reportDialogStart, reportDialogEnd, state.transactions, state.expenses) });
+  if (!openPrintWindow(html)) return showToast('اسمح بفتح نافذة الطباعة من إعدادات المتصفح.', 'error');
+  reportDialogMode = null;
+  render();
+}
+
+function updateCustomServiceField() {
+  const select = document.querySelector('#transactionSiteSelect');
+  const field = document.querySelector('#customServiceField');
+  const input = field?.querySelector('input[name="customServiceName"]');
+  if (!select || !field || !input) return;
+  const manual = select.value === '__custom__';
+  field.hidden = !manual;
+  input.required = manual;
+  if (manual) input.focus();
+}
+
+function renderRecordDeleteDialog() {
+  const collection = recordToDelete.type === 'transaction' ? state.transactions : state.expenses;
+  const record = collection.find((item) => item.id === recordToDelete.id);
+  const title = recordToDelete.type === 'transaction' ? record?.customer || 'المعاملة' : record?.description || 'المصروف';
+  return `<div class="modal-backdrop" data-delete-backdrop><form id="recordDeleteForm" class="modal-card delete-modal" role="dialog" aria-modal="true" aria-labelledby="deleteDialogTitle"><header class="modal-heading"><div><p class="eyebrow">حماية السجلات</p><h2 id="deleteDialogTitle">تأكيد حذف السجل</h2></div><button type="button" class="icon-btn" data-cancel-delete aria-label="إغلاق">${icon('close', 18)}</button></header><p class="delete-record-label">${escapeHtml(title)} — ${formatMoney(record?.amount || 0)}</p><label>أدخل رمز الحذف الذي ضبطته في الإعدادات<input name="deletionPassword" type="password" required minlength="8" maxlength="128" autocomplete="current-password" autofocus></label><footer class="modal-actions"><button type="button" class="ghost-btn" data-cancel-delete>إلغاء</button><button type="submit" class="danger-btn">تأكيد الحذف</button></footer></form></div>`;
 }
 
 function renderSettings() {
   const editingSite = state.sites.find((site) => site.id === editingSiteId);
   const requestStatus = clientPasswordRequest?.status === 'pending' ? 'طلب تغيير كلمة المرور قيد مراجعة المدير.' : clientPasswordRequest?.status === 'approved' ? 'وافق المدير على آخر طلب تغيير كلمة المرور.' : clientPasswordRequest?.status === 'rejected' ? 'رفض المدير آخر طلب تغيير كلمة المرور؛ يمكنك إرسال طلب جديد.' : 'تغيير كلمة المرور يحتاج موافقة مدير النظام.';
+  const deletionPasswordExists = Boolean(state.recordDeletionProtection?.hash && state.recordDeletionProtection?.salt);
   return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">إدارة بيانات المكتب وكلمة المرور ومواقع الخدمات.</p></div></div>
-    <div class="settings-grid"><div class="panel office-panel"><div class="panel-heading"><div><p class="eyebrow">بيانات الحساب</p><h2>${escapeHtml(authSession.account?.officeName || state.officeName)}</h2></div></div><p class="helper-text">صاحب المكتب: ${escapeHtml(authSession.account?.ownerName || '—')}</p><p class="helper-text">رقم الهاتف: ${escapeHtml(authSession.account?.phone || '—')}</p><p class="helper-text">اسم الدخول: ${escapeHtml(authSession.account?.username || '—')}</p><form id="officeNameForm" class="form-grid account-settings-form"><label class="full-span">اسم المكتب<input name="officeName" required maxlength="120" value="${escapeHtml(authSession.account?.officeName || state.officeName)}"></label><button class="primary-btn" type="submit">حفظ اسم المكتب</button></form><hr class="settings-divider"><form id="passwordChangeRequestForm" class="form-grid account-settings-form"><p class="helper-text full-span">${requestStatus}</p><label>كلمة المرور الجديدة<input name="password" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><label>تأكيد كلمة المرور<input name="confirmPassword" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><button class="secondary-btn full-span" type="submit" ${clientPasswordRequest?.status === 'pending' ? 'disabled' : ''}>إرسال طلب تغيير كلمة المرور</button></form></div><div class="panel add-site-panel"><div class="panel-heading"><div><p class="eyebrow">دليل المواقع</p><h2>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h2></div>${editingSite ? `<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>` : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة <span class="label-hint">اختياري</span><input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div></div>
+    <div class="settings-grid"><div class="panel office-panel"><div class="panel-heading"><div><p class="eyebrow">بيانات الحساب</p><h2>${escapeHtml(authSession.account?.officeName || state.officeName)}</h2></div></div><p class="helper-text">صاحب المكتب: ${escapeHtml(authSession.account?.ownerName || '—')}</p><p class="helper-text">رقم الهاتف: ${escapeHtml(authSession.account?.phone || '—')}</p><p class="helper-text">اسم الدخول: ${escapeHtml(authSession.account?.username || '—')}</p><form id="officeNameForm" class="form-grid account-settings-form"><label class="full-span">اسم المكتب<input name="officeName" required maxlength="120" value="${escapeHtml(authSession.account?.officeName || state.officeName)}"></label><button class="primary-btn" type="submit">حفظ اسم المكتب</button></form><hr class="settings-divider"><form id="passwordChangeRequestForm" class="form-grid account-settings-form"><p class="helper-text full-span">${requestStatus}</p><label>كلمة المرور الجديدة<input name="password" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><label>تأكيد كلمة المرور<input name="confirmPassword" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><button class="secondary-btn full-span" type="submit" ${clientPasswordRequest?.status === 'pending' ? 'disabled' : ''}>إرسال طلب تغيير كلمة المرور</button></form><hr class="settings-divider"><div class="record-protection-settings"><p class="eyebrow">حماية المعاملات</p><h3>${deletionPasswordExists ? 'رمز حذف السجلات مضبوط' : 'اضبط رمز حذف السجلات'}</h3><p class="helper-text">لا يمكن حذف معاملة أو مصروف من الواجهة أو الخادم إلا بهذا الرمز. لا تحفظ كلمة المرور نفسها.</p><form id="recordDeletionPasswordForm" class="form-grid account-settings-form">${deletionPasswordExists ? '<label class="full-span">رمز الحذف الحالي<input name="currentPassword" type="password" required minlength="8" maxlength="128" autocomplete="current-password"></label>' : ''}<label>رمز الحذف الجديد<input name="newPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><label>تأكيد الرمز<input name="confirmPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><button class="primary-btn full-span" type="submit">${deletionPasswordExists ? 'تغيير رمز الحذف' : 'حفظ رمز الحذف'}</button></form></div></div><div class="panel add-site-panel"><div class="panel-heading"><div><p class="eyebrow">دليل المواقع</p><h2>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h2></div>${editingSite ? `<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>` : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة <span class="label-hint">اختياري</span><input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div></div>
     <div class="panel manage-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المحتوى</p><h2>المواقع المضافة</h2></div><span class="record-count">${state.sites.length}</span></div><div class="manage-list">${state.sites.map((site) => `<div class="manage-row">${imageMarkup(site, 'mini-image')}<div class="record-main"><strong>${escapeHtml(site.name)}</strong><small>${escapeHtml(site.category)}</small></div><div class="manage-actions"><button class="icon-btn" data-edit-site="${escapeHtml(site.id)}" aria-label="تعديل ${escapeHtml(site.name)}">${icon('edit', 17)}</button><button class="icon-btn danger" data-delete-site="${escapeHtml(site.id)}" aria-label="حذف ${escapeHtml(site.name)}">${icon('trash', 17)}</button></div></div>`).join('')}</div></div>
   </section>`;
 }
@@ -664,22 +732,32 @@ function bindViewEvents() {
   if (salesDate) salesDate.addEventListener('change', (event) => { selectedSalesDate = event.target.value; render(); });
   const reportMonth = document.querySelector('#reportMonth');
   if (reportMonth) reportMonth.addEventListener('change', (event) => { selectedReportMonth = event.target.value || todayKey().slice(0, 7); });
-  document.querySelector('#printDailyReport')?.addEventListener('click', () => {
-    const dateKey = selectedSalesDate && selectedSalesDate !== 'all' ? selectedSalesDate : todayKey();
-    const report = aggregateDailyReport(dateKey, state.transactions, state.expenses);
-    const html = renderDailyReportHtml({ officeName: authSession.account?.officeName || state.officeName, report });
-    if (!openPrintWindow(html)) showToast('اسمح بفتح النوافذ المنبثقة لطباعة التقرير.', 'error');
+  document.querySelector('#printDailyReport')?.addEventListener('click', () => openReportDialog('daily'));
+  document.querySelector('#printMonthlyReport')?.addEventListener('click', () => openReportDialog('range'));
+  document.querySelector('#reportDialogStart')?.addEventListener('change', (event) => {
+    reportDialogStart = event.target.value || todayKey();
+    if (reportDialogMode === 'range' && reportDialogEnd < reportDialogStart) reportDialogEnd = reportDialogStart;
+    render();
   });
-  document.querySelector('#printMonthlyReport')?.addEventListener('click', () => {
-    const report = aggregateMonthlyReport(selectedReportMonth, state.transactions, state.expenses);
-    const html = renderMonthlyReportHtml({ officeName: authSession.account?.officeName || state.officeName, report });
-    if (!openPrintWindow(html)) showToast('اسمح بفتح النوافذ المنبثقة لطباعة التقرير.', 'error');
+  document.querySelector('#reportDialogEnd')?.addEventListener('change', (event) => {
+    reportDialogEnd = event.target.value || reportDialogStart;
+    if (reportDialogEnd < reportDialogStart) reportDialogStart = reportDialogEnd;
+    render();
   });
+  document.querySelectorAll('[data-close-report]').forEach((button) => button.addEventListener('click', closeReportDialog));
+  document.querySelector('[data-report-backdrop]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) closeReportDialog(); });
+  document.querySelector('#confirmPrintReport')?.addEventListener('click', printSelectedReport);
+  document.querySelector('#transactionSiteSelect')?.addEventListener('change', updateCustomServiceField);
+  updateCustomServiceField();
   document.querySelector('#transactionForm')?.addEventListener('submit', handleTransactionSubmit);
   document.querySelector('#expenseForm')?.addEventListener('submit', handleExpenseSubmit);
   document.querySelector('#siteForm')?.addEventListener('submit', handleSiteSave);
   document.querySelector('#officeNameForm')?.addEventListener('submit', handleOfficeNameSave);
   document.querySelector('#passwordChangeRequestForm')?.addEventListener('submit', handlePasswordChangeRequest);
+  document.querySelector('#recordDeletionPasswordForm')?.addEventListener('submit', handleRecordDeletionPasswordSave);
+  document.querySelector('#recordDeleteForm')?.addEventListener('submit', handleRecordDeleteSubmit);
+  document.querySelectorAll('[data-cancel-delete]').forEach((button) => button.addEventListener('click', closeRecordDeleteDialog));
+  document.querySelector('[data-delete-backdrop]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) closeRecordDeleteDialog(); });
   document.querySelector('[data-cancel-edit]')?.addEventListener('click', () => { editingSiteId = null; render(); });
   document.querySelectorAll('[data-edit-site]').forEach((button) => button.addEventListener('click', () => { editingSiteId = button.dataset.editSite; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
   document.querySelectorAll('[data-delete-site]').forEach((button) => button.addEventListener('click', () => deleteSite(button.dataset.deleteSite)));
@@ -739,14 +817,101 @@ async function handlePasswordChangeRequest(event) {
   }
 }
 
+const RECORD_DELETE_PBKDF2_ITERATIONS = 160000;
+
+function bytesToHex(bytes) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function deriveRecordDeletionHash(password, saltHex) {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) throw new Error('المتصفح لا يدعم حماية رمز الحذف؛ حدّث التطبيق.');
+  const salt = new Uint8Array((saltHex.match(/.{2}/g) || []).map((pair) => Number.parseInt(pair, 16)));
+  const key = await subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await subtle.deriveBits({ name: 'PBKDF2', salt, iterations: RECORD_DELETE_PBKDF2_ITERATIONS, hash: 'SHA-256' }, key, 256);
+  return bytesToHex(new Uint8Array(bits));
+}
+
+async function createRecordDeletionProtection(password) {
+  const salt = bytesToHex(globalThis.crypto.getRandomValues(new Uint8Array(16)));
+  return { salt, hash: await deriveRecordDeletionHash(password, salt), iterations: RECORD_DELETE_PBKDF2_ITERATIONS };
+}
+
+async function verifyRecordDeletionPassword(password, protection = state.recordDeletionProtection) {
+  if (typeof password !== 'string' || password.length < 8 || !protection || protection.iterations !== RECORD_DELETE_PBKDF2_ITERATIONS || !/^[a-f0-9]{32}$/i.test(protection.salt || '') || !/^[a-f0-9]{64}$/i.test(protection.hash || '')) return false;
+  return (await deriveRecordDeletionHash(password, protection.salt)) === protection.hash.toLowerCase();
+}
+
+async function handleRecordDeletionPasswordSave(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const currentPassword = String(data.get('currentPassword') || '');
+  const newPassword = String(data.get('newPassword') || '');
+  if (newPassword.length < 8 || newPassword.length > 128) return showToast('رمز الحذف يجب أن يكون بين 8 و128 خانة.', 'error');
+  if (newPassword !== String(data.get('confirmPassword') || '')) return showToast('رمز الحذف وتأكيده غير متطابقين.', 'error');
+  try {
+    if (state.recordDeletionProtection && !await verifyRecordDeletionPassword(currentPassword)) return showToast('رمز الحذف الحالي غير صحيح.', 'error');
+    const previousProtection = state.recordDeletionProtection;
+    state.recordDeletionProtection = await createRecordDeletionProtection(newPassword);
+    try { await saveState(undefined, true); }
+    catch (error) { state.recordDeletionProtection = previousProtection; saveState(); throw error; }
+    showToast('تم حفظ رمز حماية المعاملات.');
+    render();
+  } catch (error) { showToast(error.message || 'تعذر إنشاء رمز الحذف.', 'error'); }
+}
+
+function deleteRecord(value) {
+  if (!state.recordDeletionProtection?.hash) {
+    showToast('اضبط رمز حذف السجلات أولاً من الإعدادات.', 'error');
+    navigate('settings');
+    return;
+  }
+  const [type, id] = value.split(':');
+  if (!['transaction', 'expense'].includes(type) || !id) return;
+  recordToDelete = { type, id };
+  render();
+  setTimeout(() => document.querySelector('#recordDeleteForm input[name="deletionPassword"]')?.focus(), 0);
+}
+
+function closeRecordDeleteDialog() {
+  recordToDelete = null;
+  render();
+}
+
+async function handleRecordDeleteSubmit(event) {
+  event.preventDefault();
+  if (!recordToDelete) return;
+  const form = event.currentTarget;
+  const password = String(new FormData(form).get('deletionPassword') || '');
+  if (!await verifyRecordDeletionPassword(password)) return showToast('رمز الحذف غير صحيح.', 'error');
+  const key = recordToDelete.type === 'transaction' ? 'transactions' : 'expenses';
+  const previous = state[key];
+  state[key] = previous.filter((item) => item.id !== recordToDelete.id);
+  try {
+    await saveState(password);
+    recordToDelete = null;
+    showToast('تم حذف السجل بعد التحقق من الرمز.');
+    render();
+  } catch (error) {
+    state[key] = previous;
+    saveState();
+    const message = error.code === 'invalid_record_deletion_password' ? 'الخادم رفض الرمز؛ تحقق من إعداد الحماية وأعد المحاولة.' : error.code === 'record_deletion_password_required' ? 'لا يوجد رمز حماية محفوظ لهذا الحساب. اضبطه من الإعدادات أولاً.' : error.message || 'تعذر حذف السجل؛ أُعيدت البيانات كما كانت.';
+    showToast(message, 'error');
+    render();
+  }
+}
+
 function handleTransactionSubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const amount = Number(data.get('amount'));
-  const site = state.sites.find((item) => item.id === data.get('siteId'));
-  if (!site || !amount || amount < 0) return showToast('أدخل بيانات المعاملة بشكل صحيح', 'error');
+  const siteId = String(data.get('siteId') || '');
+  const site = state.sites.find((item) => item.id === siteId);
+  const customName = String(data.get('customServiceName') || '').trim();
+  const siteName = siteId === '__custom__' ? customName : site?.name;
+  if (!siteName || siteId === '__custom__' && customName.length > 120 || !amount || amount < 0) return showToast('أدخل نوع المعاملة وبياناتها بشكل صحيح.', 'error');
   const createdAt = new Date().toISOString();
-  state.transactions.push({ id: uid('txn'), customer: String(data.get('customer')).trim(), siteId: site.id, siteName: site.name, amount, createdAt, dateKey: todayKey() });
+  state.transactions.push({ id: uid('txn'), customer: String(data.get('customer')).trim(), siteId: site?.id || null, siteName, amount, createdAt, dateKey: todayKey() });
   saveState();
   showToast('تم تسجيل المعاملة');
   render();
@@ -770,16 +935,6 @@ function deleteSite(id) {
   state.sites = state.sites.filter((item) => item.id !== id);
   saveState();
   showToast('تم حذف الموقع');
-  render();
-}
-
-function deleteRecord(value) {
-  const [type, id] = value.split(':');
-  if (!window.confirm('هل تريد حذف هذا السجل؟')) return;
-  if (type === 'transaction') state.transactions = state.transactions.filter((item) => item.id !== id);
-  if (type === 'expense') state.expenses = state.expenses.filter((item) => item.id !== id);
-  saveState();
-  showToast('تم حذف السجل');
   render();
 }
 

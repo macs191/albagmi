@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, pbkdf2Sync, randomBytes, timingSafeEqual, randomUUID } from 'node:crypto';
 
 const ACCOUNT_TABLE = 'albagmi_accounts';
 const USER_DATA_TABLE = 'albagmi_user_data';
@@ -10,6 +10,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const loginFailures = new Map();
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 8;
+const RECORD_DELETE_PBKDF2_ITERATIONS = 160000;
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -109,6 +110,21 @@ function safeEqual(a, b) {
   const r = Buffer.alloc(length);
   left.copy(l); right.copy(r);
   return timingSafeEqual(l, r) && left.length === right.length;
+}
+
+function hasRemovedRecords(previous = {}, next = {}) {
+  const removedFrom = (before, after) => {
+    const retainedIds = new Set((Array.isArray(after) ? after : []).map((item) => String(item?.id || '')).filter(Boolean));
+    return (Array.isArray(before) ? before : []).some((item) => item?.id && !retainedIds.has(String(item.id)));
+  };
+  return removedFrom(previous.transactions, next.transactions) || removedFrom(previous.expenses, next.expenses);
+}
+
+function verifyRecordDeletionPassword(protection, password) {
+  if (!protection || typeof password !== 'string' || password.length < 8 || password.length > 128) return false;
+  if (protection.iterations !== RECORD_DELETE_PBKDF2_ITERATIONS || !/^[a-f0-9]{32}$/i.test(protection.salt || '') || !/^[a-f0-9]{64}$/i.test(protection.hash || '')) return false;
+  const derived = pbkdf2Sync(password, Buffer.from(protection.salt, 'hex'), RECORD_DELETE_PBKDF2_ITERATIONS, 32, 'sha256').toString('hex');
+  return safeEqual(derived, protection.hash.toLowerCase());
 }
 
 function base64url(input) {
@@ -667,6 +683,13 @@ export default async function handler(req, res) {
       const state = body.app_state ?? body.appState;
       if (!state || typeof state !== 'object' || Array.isArray(state)) throw new HttpError(400, 'invalid_app_state');
       if (Buffer.byteLength(JSON.stringify(state), 'utf8') > MAX_STATE_BYTES) throw new HttpError(413, 'payload_too_large');
+      const previousResult = await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}${query('app_state', { user_id: `eq.${userId}`, limit: '1' })}`, {}, true);
+      const previousState = Array.isArray(previousResult.data) ? previousResult.data[0]?.app_state || {} : {};
+      if (hasRemovedRecords(previousState, state)) {
+        const protection = previousState.recordDeletionProtection;
+        if (!protection) throw new HttpError(403, 'record_deletion_password_required');
+        if (!verifyRecordDeletionPassword(protection, body.deletionPassword)) throw new HttpError(403, 'invalid_record_deletion_password');
+      }
       const updated = await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}?on_conflict=user_id&select=app_state`, {
         method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
         body: JSON.stringify({ user_id: userId, app_state: state, updated_at: new Date().toISOString() }),

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { pbkdf2Sync } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import handler from '../api/[...path].js';
@@ -12,7 +13,7 @@ import clientAccountRoute from '../api/client/account.js';
 import clientPasswordRequestRoute from '../api/client/password-request.js';
 import adminPasswordRequestsRoute from '../api/admin/password-requests.js';
 import reviewPasswordRequestRoute from '../api/admin/password-requests/[requestId].js';
-import { aggregateDailyReport, aggregateMonthlyReport, renderDailyReportHtml, renderMonthlyReportHtml } from '../src/reports.js';
+import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, renderDailyReportHtml, renderMonthlyReportHtml, renderRangeReportHtml } from '../src/reports.js';
 
 const ENV_KEYS = [
   'SUPABASE_URL',
@@ -455,6 +456,50 @@ test('client state reads and writes are scoped to the verified Supabase Auth UID
   }
 });
 
+test('client state API requires the saved deletion password before removing transactions or expenses', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  const password = 'delete-me-123';
+  const salt = '0123456789abcdef0123456789abcdef';
+  const previousState = {
+    officeName: 'مكتب الاختبار', sites: [],
+    transactions: [{ id: 'txn-protected', amount: 20 }], expenses: [{ id: 'exp-protected', amount: 5 }],
+    recordDeletionProtection: { salt, hash: pbkdf2Sync(password, Buffer.from(salt, 'hex'), 160000, 32, 'sha256').toString('hex'), iterations: 160000 }
+  };
+  let writeCount = 0;
+  let currentState = { ...previousState, recordDeletionProtection: undefined };
+  try {
+    const result = await withMockFetch(async (url, options = {}) => {
+      const target = String(url);
+      if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_accounts?select=*&auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_user_data?select=app_state&user_id=eq.auth-user-1')) return new Response(JSON.stringify([{ app_state: currentState }]), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_user_data?on_conflict=user_id&select=app_state')) {
+        writeCount += 1;
+        currentState = JSON.parse(options.body).app_state;
+        return new Response(JSON.stringify([{ app_state: currentState }]), { status: 201 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, async () => {
+      const appState = { ...previousState, transactions: [], expenses: [] };
+      const unconfigured = await callApi('PUT', '/api/client/state', { appState }, { authorization: 'Bearer test-access' });
+      currentState = previousState;
+      const wrong = await callApi('PUT', '/api/client/state', { appState, deletionPassword: 'wrong-password' }, { authorization: 'Bearer test-access' });
+      const correct = await callApi('PUT', '/api/client/state', { appState, deletionPassword: password }, { authorization: 'Bearer test-access' });
+      return { unconfigured, wrong, correct };
+    });
+    assert.equal(result.unconfigured.statusCode, 403);
+    assert.equal(result.unconfigured.data.error, 'record_deletion_password_required');
+    assert.equal(result.wrong.statusCode, 403);
+    assert.equal(result.wrong.data.error, 'invalid_record_deletion_password');
+    assert.equal(result.correct.statusCode, 200);
+    assert.equal(writeCount, 1);
+    assert.deepEqual(result.correct.data.appState.transactions, []);
+  } finally {
+    restoreEnv(original);
+  }
+});
+
 test('daily report totals include only the chosen date and render an A4 portrait report safely', () => {
   const transactions = [
     { dateKey: '2026-10-30', amount: 100, customer: '<script>alert(1)</script>', siteName: 'تأمين', createdAt: '2026-10-30T10:00:00Z' },
@@ -490,6 +535,26 @@ test('monthly report summarizes every calendar day, including zero-sales days, o
   const html = renderMonthlyReportHtml({ officeName: 'مكتب آمن', report });
   assert.match(html, /size: A4 landscape/);
   assert.match(html, /إجمالي مبيعات الشهر/);
+});
+
+test('custom report date ranges include only the selected records and escape printed details', () => {
+  const transactions = [
+    { dateKey: '2026-03-02', amount: 50, customer: '<b>عميل</b>', siteName: 'بند يدوي', createdAt: '2026-03-02T09:00:00Z' },
+    { dateKey: '2026-03-04', amount: 25, customer: 'عميل 2', siteName: 'نجم', createdAt: '2026-03-04T10:00:00Z' },
+    { dateKey: '2026-03-05', amount: 500, customer: 'خارج الفترة', siteName: 'خدمة', createdAt: '2026-03-05T10:00:00Z' }
+  ];
+  const expenses = [{ dateKey: '2026-03-03', amount: 10, description: 'وقود', createdAt: '2026-03-03T11:00:00Z' }];
+  const report = aggregateRangeReport('2026-03-02', '2026-03-04', transactions, expenses);
+  assert.equal(report.days.length, 3);
+  assert.equal(report.transactions.length, 2);
+  assert.equal(report.salesTotal, 75);
+  assert.equal(report.expensesTotal, 10);
+  assert.equal(report.net, 65);
+  const html = renderRangeReportHtml({ officeName: 'مكتب آمن', report });
+  assert.match(html, /size: A4 landscape/);
+  assert.match(html, /&lt;b&gt;عميل&lt;\/b&gt;/);
+  assert.equal(html.includes('خارج الفترة'), false);
+  assert.throws(() => aggregateRangeReport('2026-03-04', '2026-03-02'), /invalid_report_range/);
 });
 
 
@@ -528,6 +593,8 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.equal(packageJson.version, '0.1.3');
+  assert.match(appSource, /ServiceHub-Desktop-0\.1\.3-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
@@ -537,4 +604,20 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /persist:servicehub-sites/);
   assert.match(electronMain, /did-fail-load/);
   assert.match(electronMain, /تعذر الاتصال بموقع الخدمة/);
+});
+
+test('sales and service UI hides redundant chrome and requires the deletion dialog and manual item path', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
+  assert.match(source, /id="embeddedSiteHost"/);
+  assert.doesNotMatch(source, /الموقع داخل النظام · لا يظهر الرابط/);
+  assert.doesNotMatch(source, /إذا ظهرت رسالة «لا يوجد اتصال»/);
+  assert.match(source, /sidebar-download/);
+  assert.doesNotMatch(source, /موقع محفوظ/);
+  assert.match(source, /value="__custom__">إضافة بند يدوياً/);
+  assert.match(source, /id="reportDialogStart"/);
+  assert.match(source, /reportDialogMode === 'daily' \? 'التقرير اليومي'/);
+  assert.match(source, /id="recordDeleteForm"/);
+  assert.match(source, /recordDeletionProtection/);
+  assert.match(styles, /\.modal-backdrop/);
 });
