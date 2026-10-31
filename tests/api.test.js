@@ -14,6 +14,7 @@ import clientPasswordRequestRoute from '../api/client/password-request.js';
 import adminPasswordRequestsRoute from '../api/admin/password-requests.js';
 import reviewPasswordRequestRoute from '../api/admin/password-requests/[requestId].js';
 import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, renderDailyReportHtml, renderMonthlyReportHtml, renderRangeReportHtml } from '../src/reports.js';
+import { buildOfficeWhatsappUrl, normalizeWhatsappNumber, publicServiceCount, renderPublicOfficePage } from '../src/public-page.js';
 
 const ENV_KEYS = [
   'SUPABASE_URL',
@@ -66,6 +67,7 @@ const account = {
   id: 'account-1',
   auth_user_id: 'auth-user-1',
   username: 'office1',
+  public_slug: 'office1',
   office_name: 'مكتب الاختبار',
   owner_name: 'صاحب الاختبار',
   phone: '0500000000',
@@ -98,7 +100,7 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
   try {
     const response = await withMockFetch(async (url, options = {}) => {
       if (String(url).endsWith('/auth/v1/settings')) return new Response('{}', { status: 200 });
-      if (String(url).includes('/rest/v1/albagmi_accounts?select=id&limit=1') || String(url).includes('/rest/v1/albagmi_user_data?select=user_id&limit=1')) {
+      if (String(url).includes('/rest/v1/albagmi_accounts?select=id%2Cpublic_slug&limit=1') || String(url).includes('/rest/v1/albagmi_user_data?select=user_id&limit=1')) {
         assert.equal(options.headers?.apikey, 'test-service-role-key');
         assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
         return new Response('[]', { status: 200 });
@@ -109,6 +111,50 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
     assert.equal(response.statusCode, 200);
     assert.equal(response.data.ok, true);
     assert.equal(response.data.supabase, 'connected');
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('public service buttons use the office account WhatsApp phone and include the selected service', () => {
+  assert.equal(normalizeWhatsappNumber('٠٥٠٠٠٠٠٠٠٠'), '966500000000');
+  const url = new URL(buildOfficeWhatsappUrl('0500000000', 'مكتب تجريبي', 'نقل ملكية السيارات'));
+  assert.equal(url.hostname, 'wa.me');
+  assert.equal(url.pathname, '/966500000000');
+  assert.match(decodeURIComponent(url.searchParams.get('text')), /نقل ملكية السيارات/);
+  assert.match(decodeURIComponent(url.searchParams.get('text')), /مكتب تجريبي/);
+  assert.equal(publicServiceCount(), 24);
+  const html = renderPublicOfficePage({ officeName: 'مكتب <اختبار>', phone: '0500000000', officeLocation: 'https://maps.app.goo.gl/example' });
+  assert.match(html, /مكتب &lt;اختبار&gt;/);
+  assert.match(html, /wa\.me\/966500000000/);
+  assert.match(html, /maps\.app\.goo\.gl\/example/);
+  assert.doesNotMatch(html, /0500000001/);
+});
+
+test('public office endpoint exposes only office name, saved phone and safe map link without saving requests', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  const privateMarker = 'DO_NOT_EXPOSE_PRIVATE_SALES';
+  try {
+    const response = await withMockFetch(async (url, options = {}) => {
+      const target = new URL(String(url));
+      if (target.pathname === '/rest/v1/albagmi_accounts') {
+        assert.equal(target.searchParams.get('public_slug'), 'eq.office1');
+        assert.equal(target.searchParams.get('limit'), '1');
+        assert.equal(target.searchParams.get('select'), 'public_slug,auth_user_id,office_name,phone,is_active');
+        assert.equal(options.method, undefined);
+        return new Response(JSON.stringify([{ public_slug: 'office1', auth_user_id: 'auth-user-1', office_name: 'مكتب الاختبار', phone: '0500000000', is_active: true }]), { status: 200 });
+      }
+      if (target.pathname === '/rest/v1/albagmi_user_data') {
+        assert.equal(target.searchParams.get('user_id'), 'eq.auth-user-1');
+        assert.equal(target.searchParams.get('limit'), '1');
+        return new Response(JSON.stringify([{ app_state: { officeLocation: 'https://maps.app.goo.gl/example', transactions: [{ note: privateMarker }] } }]), { status: 200 });
+      }
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('GET', '/api/public-page/office1'));
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.data, { publicSlug: 'office1', officeName: 'مكتب الاختبار', phone: '0500000000', officeLocation: 'https://maps.app.goo.gl/example' });
+    assert.equal(JSON.stringify(response.data).includes(privateMarker), false);
   } finally {
     restoreEnv(original);
   }
@@ -290,6 +336,24 @@ test('public visit registration stores only a validated random browser UUID', as
     const invalid = await callApi('POST', '/api/visit', { visitorId: 'not-a-uuid', ip: '192.0.2.1' });
     assert.equal(invalid.statusCode, 400);
     assert.equal(invalid.data.error, 'invalid_visitor_id');
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('authenticated office can read its own public page slug', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  try {
+    const response = await withMockFetch(async (url) => {
+      const target = String(url);
+      if (target.endsWith('/auth/v1/user')) return new Response(JSON.stringify({ id: 'auth-user-1' }), { status: 200 });
+      if (target.includes('/rest/v1/albagmi_accounts?select=*&auth_user_id=eq.auth-user-1')) return new Response(JSON.stringify([account]), { status: 200 });
+      throw new Error(`Unexpected test URL: ${target}`);
+    }, () => callApi('GET', '/api/client/account', undefined, { authorization: 'Bearer client-token' }));
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.data.publicSlug, 'office1');
+    assert.equal(response.data.phone, account.phone);
   } finally {
     restoreEnv(original);
   }
@@ -582,6 +646,7 @@ test('office subscription starts when the system manager activates the account',
     const startedAt = Date.parse(inserted.subscription_started_at);
     const endsAt = Date.parse(inserted.subscription_ends_at);
     assert.equal(created.statusCode, 201);
+    assert.match(inserted.public_slug, /^office-[0-9a-f]{16}$/);
     assert.ok(startedAt >= startBefore && startedAt <= Date.now());
     assert.equal(endsAt - startedAt, requestedDays * 86400000);
   } finally {
@@ -593,8 +658,8 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.5');
-  assert.match(appSource, /ServiceHub-Desktop-0\.1\.5-Setup\.exe/);
+  assert.equal(packageJson.version, '0.1.6');
+  assert.match(appSource, /ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
@@ -625,4 +690,25 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
   assert.match(source, /id="recordDeleteForm"/);
   assert.match(source, /recordDeletionProtection/);
   assert.match(styles, /\.modal-backdrop/);
+});
+
+
+test('public office pages use Vercel path slugs and UID-scoped map settings', async () => {
+  const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const pageSource = await readFile(new URL('../src/public-page.js', import.meta.url), 'utf8');
+  const apiSource = await readFile(new URL('../api/[...path].js', import.meta.url), 'utf8');
+  const migration = await readFile(new URL('../supabase/migrations/20261031070000_add_public_page_slug.sql', import.meta.url), 'utf8');
+  const privacyMigration = await readFile(new URL('../supabase/migrations/20261031112000_randomize_public_page_slugs.sql', import.meta.url), 'utf8');
+  const vercel = JSON.parse(await readFile(new URL('../vercel.json', import.meta.url), 'utf8'));
+  assert.ok(vercel.rewrites.some((rule) => rule.source === '/m/:slug' && rule.destination === '/'));
+  assert.match(appSource, /publicPageSlug = window\.location\.pathname\.match\(\/\^\\\/m\\\//);
+  assert.match(appSource, /id="officeLocationForm"/);
+  assert.match(appSource, /apiRequest\('client\/account'\)/);
+  assert.match(pageSource, /https:\/\/wa\.me\/\$\{number\}/);
+  assert.match(pageSource, /buildOfficeWhatsappUrl\(phone, officeName, service\)/);
+  assert.match(apiSource, /public-page' && method === 'GET'/);
+  assert.match(apiSource, /const publicSlug = `office-/);
+  assert.match(apiSource, /officeLocation: safePublicMapUrl\(saved\?\.officeLocation\)/);
+  assert.match(migration, /add column if not exists public_slug text/);
+  assert.match(privacyMigration, /gen_random_uuid\(\)/);
 });

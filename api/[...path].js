@@ -62,6 +62,7 @@ function accountProfile(row) {
   return {
     id: row.id,
     username: row.username,
+    publicSlug: row.public_slug,
     officeName: row.office_name,
     ownerName: row.owner_name,
     phone: row.phone,
@@ -228,6 +229,33 @@ async function findAccountByAuthId(id) {
   return Array.isArray(data) ? data[0] || null : null;
 }
 
+function safePublicMapUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048) return '';
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const allowed = host === 'maps.app.goo.gl' || host === 'goo.gl' || host === 'g.co'
+      || host === 'google.com' || host.endsWith('.google.com');
+    return url.protocol === 'https:' && allowed ? url.href : '';
+  } catch { return ''; }
+}
+
+async function getPublicOfficePage(slugValue) {
+  const slug = typeof slugValue === 'string' ? slugValue.trim().toLowerCase() : '';
+  if (!USERNAME_RE.test(slug)) throw new HttpError(404, 'public_page_not_found');
+  const { data } = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('public_slug,auth_user_id,office_name,phone,is_active', { public_slug: `eq.${slug}`, limit: '1' })}`, {}, true);
+  const account = Array.isArray(data) ? data[0] : null;
+  if (!account || account.is_active === false) throw new HttpError(404, 'public_page_not_found');
+  const stateResult = await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}${query('app_state', { user_id: `eq.${account.auth_user_id}`, limit: '1' })}`, {}, true);
+  const saved = Array.isArray(stateResult.data) ? stateResult.data[0]?.app_state : null;
+  return {
+    publicSlug: account.public_slug,
+    officeName: account.office_name,
+    phone: account.phone,
+    officeLocation: safePublicMapUrl(saved?.officeLocation),
+  };
+}
+
 async function incrementAccountLogin(accountId) {
   await supabaseFetch('/rest/v1/rpc/albagmi_increment_login', {
     method: 'POST', body: JSON.stringify({ p_account_id: accountId }),
@@ -279,6 +307,7 @@ async function createAccount(body) {
   if (typeof body.password !== 'string' || body.password.length < 8 || body.password.length > 1024) throw new HttpError(400, 'invalid_password');
   const subscriptionDays = positiveDays(body.subscriptionDays);
   if (await findAccountByUsername(username)) throw new HttpError(409, 'username_taken');
+  const publicSlug = `office-${randomUUID().replace(/-/g, '').slice(0, 16)}`;
   for (const key of ['officeName', 'ownerName', 'phone']) {
     if (typeof body[key] !== 'string' || body[key].trim().length > 300) throw new HttpError(400, `invalid_${key}`);
   }
@@ -293,7 +322,7 @@ async function createAccount(body) {
   const now = new Date();
   const end = new Date(now.getTime() + subscriptionDays * 86400000);
   const record = {
-    id: randomUUID(), auth_user_id: authUserId, username,
+    id: randomUUID(), auth_user_id: authUserId, username, public_slug: publicSlug,
     office_name: body.officeName.trim(), owner_name: body.ownerName.trim(), phone: body.phone.trim(),
     subscription_started_at: now.toISOString(), subscription_days: subscriptionDays,
     subscription_ends_at: end.toISOString(), app_state: {},
@@ -532,7 +561,7 @@ export default async function handler(req, res) {
       if (missing.length) return json(res, 503, { ok: false, error: 'server_configuration_missing', missing });
       try { await supabaseFetch('/auth/v1/settings'); }
       catch { return json(res, 502, { ok: false, error: 'supabase_auth_unreachable' }); }
-      try { await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id', { limit: '1' })}`, {}, true); }
+      try { await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id,public_slug', { limit: '1' })}`, {}, true); }
       catch { return json(res, 503, { ok: false, error: 'account_table_unavailable' }); }
       try { await supabaseFetch(`/rest/v1/${USER_DATA_TABLE}${query('user_id', { limit: '1' })}`, {}, true); }
       catch { return json(res, 503, { ok: false, error: 'user_data_table_unavailable' }); }
@@ -545,6 +574,9 @@ export default async function handler(req, res) {
     if (segments.length === 1 && segments[0] === 'visit' && method === 'POST') {
       await recordSiteVisitor(parseBody(req));
       return json(res, 200, { ok: true });
+    }
+    if (segments.length === 2 && segments[0] === 'public-page' && method === 'GET') {
+      return json(res, 200, await getPublicOfficePage(segments[1]));
     }
     if (segments.length === 2 && segments[0] === 'admin' && segments[1] === 'login' && method === 'POST') {
       const body = parseBody(req);
@@ -605,6 +637,10 @@ export default async function handler(req, res) {
       const body = parseBody(req);
       return json(res, 200, await reviewPasswordChangeRequest(segments[2], body.decision));
     }
+    if (segments.length === 2 && segments[0] === 'client' && segments[1] === 'account' && method === 'GET') {
+      const { account } = await requireClient(req);
+      return json(res, 200, accountProfile(account));
+    }
     if (segments.length === 2 && segments[0] === 'client' && segments[1] === 'account' && method === 'PATCH') {
       const { account } = await requireClient(req);
       const body = parseBody(req);
@@ -632,7 +668,7 @@ export default async function handler(req, res) {
     if (segments[0] === 'admin' && segments[1] === 'accounts') {
       await requireAdmin(req);
       if (segments.length === 2 && method === 'GET') {
-        const { data } = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id,username,office_name,owner_name,phone,subscription_started_at,subscription_days,subscription_ends_at,is_active,login_count,last_login_at,created_at,updated_at', { order: 'created_at.desc', limit: '1000' })}`, {}, true);
+        const { data } = await supabaseFetch(`/rest/v1/${ACCOUNT_TABLE}${query('id,username,public_slug,office_name,owner_name,phone,subscription_started_at,subscription_days,subscription_ends_at,is_active,login_count,last_login_at,created_at,updated_at', { order: 'created_at.desc', limit: '1000' })}`, {}, true);
         return json(res, 200, (Array.isArray(data) ? data : []).map(accountProfile));
       }
       if (segments.length === 2 && method === 'POST') return json(res, 201, await createAccount(parseBody(req)));

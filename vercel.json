@@ -4,6 +4,10 @@
     {
       "source": "/max",
       "destination": "/"
+    },
+    {
+      "source": "/m/:slug",
+      "destination": "/"
     }
   ]
 }

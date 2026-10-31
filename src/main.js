@@ -1,5 +1,7 @@
 import './styles.css';
 import { aggregateDailyReport, aggregateRangeReport, openPrintWindow, renderDailyReportHtml, renderRangeReportHtml } from './reports.js';
+import './public-page.css';
+import { renderPublicOfficePage, renderPublicPageLoading, renderPublicPageUnavailable } from './public-page.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -23,6 +25,7 @@ const defaultSites = [
 
 const initialState = {
   officeName: 'مكتب البقمي 2',
+  officeLocation: '',
   sites: defaultSites,
   transactions: [],
   expenses: []
@@ -30,6 +33,9 @@ const initialState = {
 
 let state = loadState();
 let authSession = loadSession();
+const publicPageSlug = window.location.pathname.match(/^\/m\/([a-z0-9._-]{3,40})\/?$/i)?.[1]?.toLowerCase() || '';
+let publicOfficeProfile = null;
+let publicPageLoading = Boolean(publicPageSlug);
 let syncTimer;
 let sessionCheckTimer;
 let currentView = getViewFromHash();
@@ -114,6 +120,7 @@ function applyAccountState(accountState) {
       ...structuredClone(initialState),
       ...saved,
       officeName: authSession?.account?.officeName || authSession?.account?.office_name || saved.officeName || initialState.officeName,
+      officeLocation: typeof saved.officeLocation === 'string' ? saved.officeLocation : '',
       sites: Array.isArray(saved.sites) ? saved.sites : structuredClone(initialState.sites),
       transactions: Array.isArray(saved.transactions) ? saved.transactions : [],
       expenses: Array.isArray(saved.expenses) ? saved.expenses : []
@@ -159,6 +166,7 @@ function loadState() {
     return {
       ...structuredClone(initialState),
       ...saved,
+      officeLocation: typeof saved.officeLocation === 'string' ? saved.officeLocation : '',
       sites: Array.isArray(saved.sites) ? saved.sites : structuredClone(initialState.sites),
       transactions: Array.isArray(saved.transactions) ? saved.transactions : [],
       expenses: Array.isArray(saved.expenses) ? saved.expenses : []
@@ -273,6 +281,19 @@ function imageMarkup(site, sizeClass = '') {
 
 function render() {
   const root = document.querySelector('#app');
+  if (publicPageSlug) {
+    if (authSession?.role === 'admin') saveSession(null);
+    if (publicOfficeProfile) {
+      document.title = `${publicOfficeProfile.officeName} | خدمات المكتب`;
+      const description = document.querySelector('meta[name="description"]');
+      if (description) description.content = `خدمات النقل والتأمين والخدمات الإلكترونية لدى ${publicOfficeProfile.officeName}.`;
+      root.innerHTML = renderPublicOfficePage(publicOfficeProfile);
+      bindPublicPageEvents();
+    } else {
+      root.innerHTML = publicPageLoading ? renderPublicPageLoading() : renderPublicPageUnavailable();
+    }
+    return;
+  }
   const adminRoute = isAdminRoute();
   if (authSession?.role === 'admin' && !adminRoute) saveSession(null);
   if (adminRoute && (authSession?.role !== 'admin' || !authSession?.token)) {
@@ -296,6 +317,58 @@ function render() {
   root.innerHTML = renderShell();
   bindViewEvents();
   syncDesktopSiteViews();
+}
+
+async function loadPublicOfficePage() {
+  render();
+  try {
+    publicOfficeProfile = await apiRequest(`public-page/${encodeURIComponent(publicPageSlug)}`, { token: null, retryAuth: false });
+  } catch {
+    publicOfficeProfile = null;
+  } finally {
+    publicPageLoading = false;
+    render();
+  }
+}
+
+function bindPublicPageEvents() {
+  const input = document.querySelector('#publicServiceSearch');
+  input?.addEventListener('input', () => {
+    const queryText = input.value.trim().toLocaleLowerCase('ar');
+    let visibleCount = 0;
+    document.querySelectorAll('[data-public-group]').forEach((group) => {
+      const heading = group.querySelector('.public-service-group-head')?.textContent.toLocaleLowerCase('ar') || '';
+      let groupCount = 0;
+      group.querySelectorAll('[data-public-service]').forEach((link) => {
+        const matches = !queryText || heading.includes(queryText) || link.dataset.publicService.toLocaleLowerCase('ar').includes(queryText);
+        link.hidden = !matches;
+        if (matches) groupCount += 1;
+      });
+      group.hidden = groupCount === 0;
+      visibleCount += groupCount;
+    });
+    const counter = document.querySelector('#publicServiceCount');
+    if (counter) counter.textContent = `${visibleCount} خدمة`;
+    const empty = document.querySelector('#publicNoServices');
+    if (empty) empty.hidden = visibleCount > 0;
+  });
+}
+
+function officePublicPageUrl() {
+  const slug = authSession?.account?.publicSlug;
+  if (!slug) return '';
+  const origin = /^https?:$/.test(window.location.protocol) ? window.location.origin : API_BASE_URL || 'https://albagmi.vercel.app';
+  try { return new URL(`/m/${encodeURIComponent(slug)}`, origin).href; } catch { return ''; }
+}
+
+function mountPublicPageSettings() {
+  const panel = document.querySelector('.office-panel');
+  if (!panel || panel.querySelector('.public-profile-settings')) return;
+  const pageUrl = officePublicPageUrl();
+  const linkMarkup = pageUrl
+    ? `<div class="public-page-link-row"><a href="${escapeHtml(pageUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(pageUrl)}</a><button type="button" class="secondary-btn" data-copy-public-page>نسخ الرابط</button></div>`
+    : '<p class="helper-text">سيظهر رابط الصفحة بعد تحديث بيانات الحساب.</p>';
+  panel.insertAdjacentHTML('beforeend', `<section class="public-profile-settings"><div><p class="eyebrow">صفحة المكتب العامة</p><h3>رابط الخدمات والتواصل</h3><p class="helper-text">هذه الصفحة تعرض اسم المكتب ورقم الحساب وقائمة الخدمات؛ يفتح اختيار الخدمة محادثة WhatsApp مباشرة.</p></div>${linkMarkup}<form id="officeLocationForm" class="form-grid account-settings-form"><label class="full-span">موقع المكتب على خرائط Google<input name="officeLocation" type="url" maxlength="2048" value="${escapeHtml(state.officeLocation || '')}" placeholder="https://maps.app.goo.gl/…"></label><p class="helper-text full-span">انسخ رابط المشاركة من Google Maps. سيظهر زر الموقع في صفحة المكتب العامة.</p><button type="submit" class="primary-btn">حفظ موقع المكتب</button></form></section>`);
 }
 
 function syncDesktopSiteViews() {
@@ -577,6 +650,8 @@ async function restoreSession() {
   try {
     if (authSession.role === 'admin') await refreshAdminAccounts();
     else {
+      const account = await apiRequest('client/account');
+      authSession.account = { ...authSession.account, ...account };
       const remote = await apiRequest('client/state');
       authSession.userId = remote.userId || authSession.userId;
       applyAccountState(remote);
@@ -604,7 +679,7 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        <a class="nav-item sidebar-download" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.5-Setup.exe" target="_blank" rel="noopener noreferrer">${icon('download')}<span>تثبيت Windows</span></a>
+        <a class="nav-item sidebar-download" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.6-Setup.exe" target="_blank" rel="noopener noreferrer">${icon('download')}<span>تثبيت Windows</span></a>
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
@@ -733,6 +808,7 @@ function renderSettings() {
 }
 
 function bindViewEvents() {
+  mountPublicPageSettings();
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
   document.querySelector('[data-home-tab]')?.addEventListener('click', () => navigate('home'));
@@ -776,6 +852,15 @@ function bindViewEvents() {
   document.querySelector('#expenseForm')?.addEventListener('submit', handleExpenseSubmit);
   document.querySelector('#siteForm')?.addEventListener('submit', handleSiteSave);
   document.querySelector('#officeNameForm')?.addEventListener('submit', handleOfficeNameSave);
+  document.querySelector('#officeLocationForm')?.addEventListener('submit', handleOfficeLocationSave);
+  document.querySelector('[data-copy-public-page]')?.addEventListener('click', async () => {
+    const pageUrl = officePublicPageUrl();
+    try {
+      if (!pageUrl || !navigator.clipboard?.writeText) throw new Error('clipboard_unavailable');
+      await navigator.clipboard.writeText(pageUrl);
+      showToast('تم نسخ رابط الصفحة العامة.');
+    } catch { showToast('تعذر نسخ الرابط تلقائيًا؛ افتح الرابط واضغط مطولًا لنسخه.', 'error'); }
+  });
   document.querySelector('#passwordChangeRequestForm')?.addEventListener('submit', handlePasswordChangeRequest);
   document.querySelector('#recordDeletionPasswordForm')?.addEventListener('submit', handleRecordDeletionPasswordSave);
   document.querySelector('#recordDeleteForm')?.addEventListener('submit', handleRecordDeleteSubmit);
@@ -822,6 +907,33 @@ async function handleOfficeNameSave(event) {
     showToast('تم تحديث اسم المكتب.');
     render();
   } catch (error) { showToast(error.message || 'تعذر حفظ اسم المكتب.', 'error'); }
+}
+
+function isGoogleMapsLocation(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const allowed = host === 'maps.app.goo.gl' || host === 'goo.gl' || host === 'g.co'
+      || host === 'google.com' || host.endsWith('.google.com');
+    return url.protocol === 'https:' && allowed;
+  } catch { return false; }
+}
+
+async function handleOfficeLocationSave(event) {
+  event.preventDefault();
+  const officeLocation = String(new FormData(event.currentTarget).get('officeLocation') || '').trim();
+  if (officeLocation && !isGoogleMapsLocation(officeLocation)) return showToast('أدخل رابط مشاركة صالحًا من خرائط Google يبدأ بـ https://.', 'error');
+  const previous = state.officeLocation || '';
+  state.officeLocation = officeLocation;
+  try {
+    await saveState(undefined, true);
+    showToast(officeLocation ? 'تم حفظ موقع المكتب وسيظهر في الصفحة العامة.' : 'تم حذف موقع المكتب من الصفحة العامة.');
+    render();
+  } catch (error) {
+    state.officeLocation = previous;
+    localStorage.setItem(userStateCacheKey(), JSON.stringify(state));
+    showToast(error.message || 'تعذر حفظ موقع المكتب في Supabase.', 'error');
+  }
 }
 
 async function handlePasswordChangeRequest(event) {
@@ -983,4 +1095,5 @@ window.desktopBridge?.onSitePopup?.(({ url, title }) => {
   openSiteTab({ id: uid('popup'), name: String(title || 'صفحة خدمة').slice(0, 120), url: safe, image: '' });
 });
 trackPublicVisitor();
-restoreSession();
+if (publicPageSlug) loadPublicOfficePage();
+else restoreSession();
