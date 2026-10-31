@@ -709,13 +709,19 @@ test('office subscription starts when the system manager activates the account',
 test('Desktop packaging, browser tabs, and service persistence use the intended platform behavior', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+  const updaterWorkflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
+  const updaterManifestScript = await readFile(new URL('../scripts/create-update-manifest.mjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.equal(packageJson.version, '0.1.7');
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-[^" ]+-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
   assert.deepEqual(packageJson.build.publish, { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
-  assert.match(await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8'), /require\('electron-updater'\)/);
+  assert.match(electronMain, /autoUpdater\.checkForUpdates\(\)/);
+  assert.match(updaterWorkflow, /gh release upload \$tag \$installer \$blockmap \$metadata/);
+  assert.match(updaterWorkflow, /create-update-manifest\.mjs/);
+  assert.match(updaterManifestScript, /createHash\('sha512'\)/);
+  assert.match(updaterManifestScript, /blockMapSize/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
   assert.equal(packageJson.build.nsis.createDesktopShortcut, true);
   assert.match(appSource, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);

@@ -33,7 +33,28 @@ jobs:
         run: pnpm test
 
       - name: Build installer
-        run: pnpm vite build --base=./ && pnpm exec electron-builder --win nsis --publish always
+        run: pnpm vite build --base=./ && pnpm exec electron-builder --win nsis --publish never
         env:
           VITE_API_BASE_URL: https://albagmi.vercel.app
+
+      - name: Create updater metadata
+        run: node scripts/create-update-manifest.mjs
+
+      - name: Publish installer and updater files
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $tag = $env:GITHUB_REF_NAME
+          $installer = "release/ServiceHub-Desktop-$version-Setup.exe"
+          $blockmap = "$installer.blockmap"
+          $metadata = "release/latest.yml"
+          if ($tag -ne "v$version") { throw "Tag $tag does not match package version $version" }
+          foreach ($file in @($installer, $blockmap, $metadata)) { if (-not (Test-Path $file)) { throw "Missing release asset: $file" } }
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) { gh release create $tag --repo $env:GITHUB_REPOSITORY --title "Service Hub Desktop $version" --notes "Automatic update release $version" }
+          if ($LASTEXITCODE -ne 0) { throw "Could not create or inspect GitHub release $tag" }
+          gh release upload $tag $installer $blockmap $metadata --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload all update assets to $tag" }
+        env:
+          GH_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
