@@ -1,6 +1,6 @@
 {
   "name": "servicehub-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "packageManager": "pnpm@10.12.4",
   "type": "module",
@@ -11,7 +11,7 @@
     "test": "node --test",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
     "desktop": "pnpm vite build --base=./ && electron .",
-    "package:win": "pnpm vite build --base=./ && electron-builder --win portable"
+    "package:win": "pnpm vite build --base=./ && electron-builder --win nsis"
   },
   "devDependencies": {
     "electron": "^36.3.2",
@@ -32,11 +32,18 @@
     "win": {
       "target": [
         {
-          "target": "portable",
+          "target": "nsis",
           "arch": ["x64"]
         }
       ],
-      "artifactName": "ServiceHub-Desktop-${version}.exe"
+      "artifactName": "ServiceHub-Desktop-${version}-Setup.exe"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Service Hub Desktop"
     }
   }
 }

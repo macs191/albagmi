@@ -291,7 +291,7 @@ function render() {
 function syncDesktopSiteViews() {
   if (!window.desktopBridge?.syncSiteTabs) return;
   const host = document.querySelector('#embeddedSiteHost');
-  if (!host) { window.desktopBridge.syncSiteTabs([], null, null); return; }
+  if (!host) { window.desktopBridge.syncSiteTabs(openSiteTabs, null, null); return; }
   const rect = host.getBoundingClientRect();
   window.desktopBridge.syncSiteTabs(openSiteTabs, activeSiteTabId, {
     x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height),
@@ -299,7 +299,12 @@ function syncDesktopSiteViews() {
 }
 
 function openSiteTab(site) {
-  if (!site || !safeUrl(site.url)) return;
+  const url = safeUrl(site?.url);
+  if (!site || !url) return;
+  if (!window.desktopBridge?.syncSiteTabs) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return;
+  }
   let tab = openSiteTabs.find((item) => item.id === site.id);
   if (!tab) {
     tab = { id: site.id, name: site.name, url: site.url, image: site.image || '' };
@@ -569,14 +574,10 @@ function renderShell() {
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
       </nav>
-      <div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>
+      ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
-      <header class="topbar">
-        <div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${activeSiteTabId ? escapeHtml(openSiteTabs.find((tab) => tab.id === activeSiteTabId)?.name || 'موقع خدمة') : currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div>
-        <div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div>
-      </header>
-      ${renderSiteTabsBar()}
+      ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
       ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>`}
     </main>
   </div>`;
@@ -601,7 +602,7 @@ function renderHome() {
   });
   const categories = ['الكل', 'المفضلة', ...new Set(state.sites.map((site) => site.category))];
   return `<section class="home-view">
-    <div class="hero-line"><div><p class="eyebrow">مساحة العمل</p><h1>${escapeHtml(state.officeName)}</h1><p class="page-subtitle">${escapeHtml(authSession.account?.ownerName || '')}${authSession.account?.phone ? ` · ${escapeHtml(authSession.account.phone)}` : ''}</p><p class="page-subtitle">كل مواقع الخدمات التي تحتاجها في مكان واحد.</p><a class="download-desktop-btn" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.1.exe" download>${icon('download', 17)} تنزيل برنامج Windows</a></div><div class="hero-stat"><span>${state.sites.length}</span><small>موقع محفوظ</small></div></div>
+    <div class="hero-line"><div><p class="eyebrow">مساحة العمل</p><h1>${escapeHtml(state.officeName)}</h1><p class="page-subtitle">${escapeHtml(authSession.account?.ownerName || '')}${authSession.account?.phone ? ` · ${escapeHtml(authSession.account.phone)}` : ''}</p><p class="page-subtitle">كل مواقع الخدمات التي تحتاجها في مكان واحد.</p><a class="download-desktop-btn" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.2-Setup.exe" download>${icon('download', 17)} تثبيت برنامج Windows</a></div><div class="hero-stat"><span>${state.sites.length}</span><small>موقع محفوظ</small></div></div>
     <div class="toolbar"><label class="search-box">${icon('search', 18)}<input id="siteSearch" value="${escapeHtml(searchTerm)}" placeholder="ابحث عن موقع أو خدمة" aria-label="ابحث عن موقع أو خدمة"></label><div class="category-chips">${categories.map((category) => `<button class="chip ${categoryFilter === category ? 'selected' : ''}" data-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div></div>
     <div class="section-heading"><div><p class="eyebrow">المواقع المتاحة</p><h2>اختر الخدمة</h2></div><span class="result-count">${filteredSites.length} موقع</span></div>
     ${filteredSites.length ? `<div class="sites-grid">${filteredSites.map(renderSiteCard).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon('search', 28)}</div><h3>لا توجد نتائج</h3><p>جرّب كلمة بحث مختلفة أو أضف موقعًا جديدًا من الإعدادات.</p></div>`}

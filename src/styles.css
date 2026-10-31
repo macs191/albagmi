@@ -41,6 +41,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .nav-item:hover { color: var(--text); background: rgba(255,255,255,.04); }
 .nav-item.active { color: #d9fff1; background: linear-gradient(90deg, rgba(85,214,173,.18), rgba(85,214,173,.05)); box-shadow: inset 3px 0 0 var(--accent); }
 .sidebar-footer { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 14px 10px; color: var(--muted-2); font-size: 11px; border-top: 1px solid var(--line); }
+.sidebar-account { margin-top: auto; padding: 15px 11px 0; border-top: 1px solid var(--line); direction: rtl; }
+.sidebar-account-label, .sidebar-account strong, .sidebar-account small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-account-label { margin-bottom: 5px; color: var(--muted-2); font-size: 10px; }
+.sidebar-account strong { color: var(--text); font-size: 12px; }
+.sidebar-account small { margin-top: 3px; color: var(--muted-2); font-size: 10px; }
+.sidebar-logout { width: 100%; display: flex; align-items: center; gap: 9px; min-height: 39px; margin-top: 12px; padding: 0 9px; color: var(--muted); background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 9px; text-align: right; font-size: 11px; }
+.sidebar-logout:hover { color: var(--danger); border-color: rgba(237,132,127,.4); background: rgba(237,132,127,.08); }
 .status-dot, .live-badge i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(85,214,173,.11); }
 .main-content { min-width: 0; flex: 1; direction: rtl; }
 .topbar { height: 72px; display: flex; align-items: center; justify-content: space-between; padding: 0 42px; border-bottom: 1px solid var(--line); background: rgba(7,31,35,.56); backdrop-filter: blur(14px); }
