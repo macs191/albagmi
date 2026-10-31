@@ -28,6 +28,7 @@ button { border: 0; cursor: pointer; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 .app-shell { min-height: 100vh; display: flex; direction: ltr; }
+.app-shell.site-active .sidebar { display: none; }
 .sidebar { width: 246px; min-height: 100vh; flex: 0 0 246px; padding: 26px 16px 22px; display: flex; flex-direction: column; direction: rtl; background: rgba(6, 29, 33, .86); border-left: 1px solid var(--line); }
 .brand-block { display: flex; gap: 11px; align-items: center; padding: 8px 11px 32px; }
 .sidebar-office { display: grid; gap: 4px; margin: -18px 11px 23px; padding: 0 0 15px; border-bottom: 1px solid var(--line); }

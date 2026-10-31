@@ -593,8 +593,8 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.4');
-  assert.match(appSource, /ServiceHub-Desktop-0\.1\.4-Setup\.exe/);
+  assert.equal(packageJson.version, '0.1.5');
+  assert.match(appSource, /ServiceHub-Desktop-0\.1\.5-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
@@ -603,6 +603,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(appSource, /syncSiteTabs\(openSiteTabs, null, null\)/);
   assert.match(appSource, /new ResizeObserver\(scheduleDesktopSiteSync\)/);
   assert.match(appSource, /addEventListener\('resize', scheduleDesktopSiteSync/);
+  assert.match(appSource, /Math\.max\(rect\.width, window\.innerWidth - rect\.left\)/);
   assert.match(electronMain, /persist:servicehub-sites/);
   assert.match(electronMain, /did-fail-load/);
   assert.match(electronMain, /تعذر الاتصال بموقع الخدمة/);
@@ -612,6 +613,8 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   assert.match(source, /id="embeddedSiteHost"/);
+  assert.match(source, /class="app-shell \$\{activeSiteTabId \? 'site-active' : ''\}"/);
+  assert.match(styles, /\.app-shell\.site-active \.sidebar \{ display: none; \}/);
   assert.doesNotMatch(source, /الموقع داخل النظام · لا يظهر الرابط/);
   assert.doesNotMatch(source, /إذا ظهرت رسالة «لا يوجد اتصال»/);
   assert.match(source, /sidebar-download/);
