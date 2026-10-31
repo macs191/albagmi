@@ -37,6 +37,19 @@ function closeSiteView(id) {
   siteViews.delete(id);
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
+
+function loadConnectionError(view, url, errorCode, description) {
+  if (errorCode === -3 || view.webContents.isDestroyed()) return;
+  const safeUrl = safeHttpUrl(url);
+  const message = escapeHtml(description || `رمز الخطأ ${errorCode}`);
+  const retry = safeUrl ? `<a href="${escapeHtml(safeUrl)}">إعادة المحاولة داخل التطبيق</a>` : '';
+  const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تعذر تحميل الخدمة</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f8f7;color:#173b3b;font:16px Tahoma,Arial,sans-serif}.card{max-width:560px;margin:24px;padding:32px;background:#fff;border:1px solid #dce8e5;border-radius:18px;box-shadow:0 16px 40px #183c3c18;text-align:center}h1{font-size:24px}p{line-height:1.8;color:#58716d}.code{font:12px monospace;color:#849590}a{display:inline-block;margin-top:12px;padding:12px 18px;border-radius:9px;background:#087f68;color:#fff;text-decoration:none}</style><main class="card"><h1>تعذر الاتصال بموقع الخدمة</h1><p>تحقق من اتصال الإنترنت أو جرّب إعادة التحميل. إذا استمرت المشكلة، فقد يمنع الموقع عرضه داخل التطبيق بسبب سياسة الأمان الخاصة به.</p><p class="code">${message}</p>${retry}</main></html>`;
+  view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {});
+}
+
 function createSiteView(tab) {
   const view = new WebContentsView({
     webPreferences: {
@@ -57,6 +70,9 @@ function createSiteView(tab) {
   });
   view.webContents.on('will-navigate', (event, url) => {
     if (!safeHttpUrl(url)) event.preventDefault();
+  });
+  view.webContents.on('did-fail-load', (_event, errorCode, description, validatedUrl, isMainFrame) => {
+    if (isMainFrame) loadConnectionError(view, validatedUrl || tab.url, errorCode, description);
   });
   configureDownloads();
   mainWindow.contentView.addChildView(view);

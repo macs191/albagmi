@@ -1,6 +1,6 @@
 {
   "name": "servicehub-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "packageManager": "pnpm@10.12.4",
   "type": "module",
@@ -10,8 +10,8 @@
     "build": "vite build",
     "test": "node --test",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
-    "desktop": "pnpm build && electron .",
-    "package:win": "pnpm build && electron-builder --win portable"
+    "desktop": "pnpm vite build --base=./ && electron .",
+    "package:win": "pnpm vite build --base=./ && electron-builder --win portable"
   },
   "devDependencies": {
     "electron": "^36.3.2",
