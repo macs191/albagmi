@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.6
+      - 'v*'
 
 permissions:
   contents: write
@@ -33,12 +33,7 @@ jobs:
         run: pnpm test
 
       - name: Build installer
-        run: pnpm package:win
+        run: pnpm vite build --base=./ && pnpm exec electron-builder --win nsis --publish always
         env:
           VITE_API_BASE_URL: https://albagmi.vercel.app
-
-      - name: Upload installer to GitHub Release
-        shell: pwsh
-        run: gh release upload $env:GITHUB_REF_NAME release/ServiceHub-Desktop-0.1.6-Setup.exe --repo $env:GITHUB_REPOSITORY --clobber
-        env:
           GH_TOKEN: ${{ github.token }}

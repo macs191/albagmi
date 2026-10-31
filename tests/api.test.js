@@ -105,7 +105,7 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
         assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
         return new Response('[]', { status: 200 });
       }
-      if (String(url).includes('/rest/v1/albagmi_site_visitors?select=visitor_id&limit=1') || String(url).includes('/rest/v1/albagmi_password_change_requests?select=id&limit=1')) return new Response('[]', { status: 200 });
+      if (String(url).includes('/rest/v1/albagmi_site_visitors?select=visitor_id&limit=1') || String(url).includes('/rest/v1/albagmi_password_change_requests?select=id&limit=1') || String(url).includes('/rest/v1/albagmi_site_catalog?select=id&limit=1')) return new Response('[]', { status: 200 });
       throw new Error(`Unexpected test URL: ${url}`);
     }, () => callApi('GET', '/api/health'));
     assert.equal(response.statusCode, 200);
@@ -175,6 +175,58 @@ test('admin logs in with a server-side password only; office login rejects admin
     const missingRole = await callApi('POST', '/api/login', { username: 'office1', password: 'office-test-password' });
     assert.equal(missingRole.statusCode, 400);
     assert.equal(missingRole.data.error, 'invalid_role');
+  } finally {
+    restoreEnv(original);
+  }
+});
+
+test('admin can securely list, add, edit, and delete shared sites', async () => {
+  const original = snapshotEnv();
+  setTestEnv();
+  const rows = [{ id: 'site-test', name: 'موقع اختبار', category: 'تجربة', url: 'https://example.com/', image: 'https://example.com/logo.png', sort_order: 20 }];
+  try {
+    const login = await callApi('POST', '/api/admin/login', { password: process.env.ALBAGMI_ADMIN_PASSWORD });
+    const headers = { authorization: `Bearer ${login.data.token}` };
+    await withMockFetch(async (url, options = {}) => {
+      const target = new URL(String(url));
+      assert.equal(target.pathname, '/rest/v1/albagmi_site_catalog');
+      assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
+      if (options.method === undefined) return new Response(JSON.stringify(rows), { status: 200 });
+      if (options.method === 'POST') {
+        const row = JSON.parse(options.body);
+        rows.push(row);
+        return new Response(JSON.stringify([row]), { status: 201 });
+      }
+      if (options.method === 'PATCH') {
+        const id = target.searchParams.get('id')?.slice(3);
+        const row = JSON.parse(options.body);
+        const index = rows.findIndex((item) => item.id === id);
+        rows[index] = row;
+        return new Response(JSON.stringify([row]), { status: 200 });
+      }
+      if (options.method === 'DELETE') {
+        const id = target.searchParams.get('id')?.slice(3);
+        const index = rows.findIndex((item) => item.id === id);
+        rows.splice(index, 1);
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected request method: ${options.method}`);
+    }, async () => {
+      const list = await callApi('GET', '/api/admin/sites', undefined, headers);
+      assert.equal(list.statusCode, 200);
+      assert.equal(list.data[0].id, 'site-test');
+      const created = await callApi('POST', '/api/admin/sites', { name: 'بوابة جديدة', category: 'تجربة', url: 'https://example.net', image: '', sortOrder: 30 }, headers);
+      assert.equal(created.statusCode, 201);
+      assert.match(created.data.id, /^managed-/);
+      const updated = await callApi('PUT', `/api/admin/sites/${created.data.id}`, { name: 'بوابة معدلة', category: 'أعمال', url: 'https://example.org', image: '', sortOrder: 40 }, headers);
+      assert.equal(updated.statusCode, 200);
+      assert.equal(updated.data.name, 'بوابة معدلة');
+      const deleted = await callApi('DELETE', `/api/admin/sites/${created.data.id}`, undefined, headers);
+      assert.equal(deleted.statusCode, 200);
+      assert.equal(deleted.data.deleted, true);
+    });
+    const unauthenticated = await callApi('POST', '/api/admin/sites', { name: 'X', category: 'Y', url: 'https://example.com' });
+    assert.equal(unauthenticated.statusCode, 401);
   } finally {
     restoreEnv(original);
   }
@@ -658,10 +710,12 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.6');
-  assert.match(appSource, /ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
+  assert.equal(packageJson.version, '0.1.7');
+  assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-[^" ]+-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
+  assert.deepEqual(packageJson.build.publish, { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
+  assert.match(await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8'), /require\('electron-updater'\)/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
   assert.equal(packageJson.build.nsis.createDesktopShortcut, true);
   assert.match(appSource, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);
@@ -682,7 +736,8 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
   assert.match(styles, /\.app-shell\.site-active \.sidebar \{ display: none; \}/);
   assert.doesNotMatch(source, /الموقع داخل النظام · لا يظهر الرابط/);
   assert.doesNotMatch(source, /إذا ظهرت رسالة «لا يوجد اتصال»/);
-  assert.match(source, /sidebar-download/);
+  assert.doesNotMatch(source, /sidebar-download|تثبيت Windows/);
+  assert.match(source, /Developer: Mohamed Ashraf/);
   assert.doesNotMatch(source, /موقع محفوظ/);
   assert.match(source, /value="__custom__">إضافة بند يدوياً/);
   assert.match(source, /id="reportDialogStart"/);

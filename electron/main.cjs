@@ -1,6 +1,7 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const { autoUpdater } = require('electron-updater');
 
 let mainWindow;
 const siteViews = new Map();
@@ -143,6 +144,24 @@ function createMainWindow() {
 }
 
 app.whenReady().then(() => {
+  if (app.isPackaged) {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', async () => {
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'تحديث Service Hub جاهز',
+        message: 'تم تنزيل تحديث جديد. أعد تشغيل البرنامج لتثبيته الآن، أو اختر لاحقًا.',
+        buttons: ['إعادة التشغيل الآن', 'لاحقًا'],
+        defaultId: 0,
+        cancelId: 1
+      });
+      if (result.response === 0) autoUpdater.quitAndInstall();
+    });
+    autoUpdater.on('error', (error) => console.error('Auto-update failed:', error.message));
+    setTimeout(() => autoUpdater.checkForUpdates().catch((error) => console.error('Auto-update check failed:', error.message)), 6000);
+    setInterval(() => autoUpdater.checkForUpdates().catch((error) => console.error('Auto-update check failed:', error.message)), 6 * 60 * 60 * 1000).unref();
+  }
   ipcMain.on('sync-site-tabs', (_event, tabs, activeId, bounds) => syncSiteTabs(tabs, activeId, bounds));
   ipcMain.handle('print-active-site', () => {
     const active = [...siteViews.values()].find(({ view }) => view.getVisible());

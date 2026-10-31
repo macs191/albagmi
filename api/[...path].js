@@ -4,6 +4,7 @@ const ACCOUNT_TABLE = 'albagmi_accounts';
 const USER_DATA_TABLE = 'albagmi_user_data';
 const VISITOR_TABLE = 'albagmi_site_visitors';
 const PASSWORD_REQUEST_TABLE = 'albagmi_password_change_requests';
+const SITE_CATALOG_TABLE = 'albagmi_site_catalog';
 const MAX_STATE_BYTES = 1024 * 1024;
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -238,6 +239,30 @@ function safePublicMapUrl(value) {
       || host === 'google.com' || host.endsWith('.google.com');
     return url.protocol === 'https:' && allowed ? url.href : '';
   } catch { return ''; }
+}
+
+function normalizeCatalogSite(body, id = `managed-${randomUUID()}`) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'invalid_site');
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const category = typeof body.category === 'string' ? body.category.trim() : '';
+  const rawUrl = typeof body.url === 'string' ? body.url.trim() : '';
+  const image = typeof body.image === 'string' ? body.image.trim() : '';
+  let url;
+  try { url = new URL(rawUrl); } catch { throw new HttpError(400, 'invalid_site_url'); }
+  if (!['http:', 'https:'].includes(url.protocol) || rawUrl.length > 2048) throw new HttpError(400, 'invalid_site_url');
+  let imageUrl = '';
+  if (image) {
+    try { imageUrl = new URL(image).href; } catch { throw new HttpError(400, 'invalid_site_image'); }
+    if (new URL(imageUrl).protocol !== 'https:' || image.length > 2048) throw new HttpError(400, 'invalid_site_image');
+  }
+  if (!name || name.length > 120 || !category || category.length > 80) throw new HttpError(400, 'invalid_site_fields');
+  const sortOrder = Number.isInteger(body.sortOrder) ? Math.max(0, Math.min(body.sortOrder, 1000000)) : 1000;
+  return { id, name, category, url: url.href, image: imageUrl, sort_order: sortOrder, updated_at: new Date().toISOString() };
+}
+
+async function listSiteCatalog() {
+  const { data } = await supabaseFetch(`/rest/v1/${SITE_CATALOG_TABLE}${query('id,name,category,url,image,sort_order', { order: 'sort_order.asc,name.asc', limit: '500' })}`, {}, true);
+  return Array.isArray(data) ? data.map((row) => ({ id: row.id, name: row.name, category: row.category, url: row.url, image: row.image || '', sortOrder: row.sort_order })) : [];
 }
 
 async function getPublicOfficePage(slugValue) {
@@ -569,6 +594,8 @@ export default async function handler(req, res) {
       catch { return json(res, 503, { ok: false, error: 'analytics_table_unavailable' }); }
       try { await supabaseFetch(`/rest/v1/${PASSWORD_REQUEST_TABLE}${query('id', { limit: '1' })}`, {}, true); }
       catch { return json(res, 503, { ok: false, error: 'password_request_table_unavailable' }); }
+      try { await supabaseFetch(`/rest/v1/${SITE_CATALOG_TABLE}${query('id', { limit: '1' })}`, {}, true); }
+      catch { return json(res, 503, { ok: false, error: 'site_catalog_table_unavailable' }); }
       return json(res, 200, { ok: true, api: 'ready', supabase: 'connected' });
     }
     if (segments.length === 1 && segments[0] === 'visit' && method === 'POST') {
@@ -623,6 +650,36 @@ export default async function handler(req, res) {
       enforceAccountActive(account);
       const subscription = enforceGrace(account);
       return json(res, 200, { token: auth.access_token, refreshToken: auth.refresh_token, userId: auth.user.id, role: 'client', account: accountProfile(account), subscription });
+    }
+    if (segments[0] === 'admin' && segments[1] === 'sites') {
+      await requireAdmin(req);
+      if (segments.length === 2 && method === 'GET') return json(res, 200, await listSiteCatalog());
+      if (segments.length === 2 && method === 'POST') {
+        const site = normalizeCatalogSite(parseBody(req));
+        const result = await supabaseFetch(`/rest/v1/${SITE_CATALOG_TABLE}?on_conflict=id&select=id,name,category,url,image,sort_order`, {
+          method: 'POST', headers: { Prefer: 'resolution=error,return=representation' }, body: JSON.stringify(site),
+        }, true);
+        const row = Array.isArray(result.data) ? result.data[0] : result.data;
+        return json(res, 201, row);
+      }
+      if (segments.length === 3 && method === 'PUT') {
+        const site = normalizeCatalogSite(parseBody(req), segments[2]);
+        const result = await supabaseFetch(`/rest/v1/${SITE_CATALOG_TABLE}?id=eq.${encodeURIComponent(segments[2])}&select=id,name,category,url,image,sort_order`, {
+          method: 'PATCH', headers: { Prefer: 'return=representation' }, body: JSON.stringify(site),
+        }, true);
+        const row = Array.isArray(result.data) ? result.data[0] : result.data;
+        if (!row) throw new HttpError(404, 'site_not_found');
+        return json(res, 200, row);
+      }
+      if (segments.length === 3 && method === 'DELETE') {
+        await supabaseFetch(`/rest/v1/${SITE_CATALOG_TABLE}?id=eq.${encodeURIComponent(segments[2])}`, { method: 'DELETE' }, true);
+        return json(res, 200, { ok: true, deleted: true });
+      }
+      throw new HttpError(404, 'not_found');
+    }
+    if (segments.length === 2 && segments[0] === 'client' && segments[1] === 'sites' && method === 'GET') {
+      await requireClient(req);
+      return json(res, 200, await listSiteCatalog());
     }
     if (segments.length === 2 && segments[0] === 'admin' && segments[1] === 'metrics' && method === 'GET') {
       await requireAdmin(req);

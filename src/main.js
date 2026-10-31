@@ -22,6 +22,7 @@ const defaultSites = [
   { id: 'site-business', name: 'منصة الأعمال', category: 'المنشآت والبلديات', url: 'https://business.sa/', image: '', favorite: false },
   { id: 'site-ia', name: 'هيئة التأمين', category: 'التأمين', url: 'https://www.ia.gov.sa/', image: '', favorite: false }
 ];
+const DEFAULT_SITE_IDS = new Set(defaultSites.map((site) => site.id));
 
 const initialState = {
   officeName: 'مكتب البقمي 2',
@@ -439,6 +440,7 @@ function renderAuth(message = authMessage) {
 
 let authMessage = '';
 let adminAccounts = [];
+let adminSites = [];
 let adminMetrics = { totalAccounts: 0, activeAccounts: 0, graceAccounts: 0, disabledAccounts: 0, totalLogins: 0, uniqueVisitors: 0 };
 
 function bindAuthEvents() {
@@ -461,6 +463,8 @@ async function checkServiceConnection(event) {
           ? 'اتصلنا بـSupabase لكن جدول عدّ الزوار غير متاح.'
           : result.error === 'password_request_table_unavailable'
           ? 'اتصلنا بـSupabase لكن جدول طلبات تغيير كلمة المرور غير موجود أو مفتاح الخدمة لا يملك صلاحية الوصول.'
+          : result.error === 'site_catalog_table_unavailable'
+          ? 'اتصلنا بـSupabase لكن جدول كتالوج المواقع المشتركة غير متاح.'
           : result.error === 'user_data_table_unavailable'
           ? 'اتصلنا بـSupabase لكن جدول بيانات الحسابات حسب UID غير متاح.'
           : 'وصلنا إلى API لكن إعداد Supabase أو جدول الحسابات غير سليم.';
@@ -504,6 +508,7 @@ async function handleLogin(event) {
     if (result.role === 'client') {
       const remote = await apiRequest('client/state');
       applyAccountState(remote);
+      await refreshClientSites();
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
       await refreshClientPasswordRequest();
@@ -543,10 +548,28 @@ function startSessionCheck() {
 }
 
 async function refreshAdminAccounts() {
-  const [accounts, metrics, passwordRequests] = await Promise.all([apiRequest('admin/accounts'), apiRequest('admin/metrics'), apiRequest('admin/password-requests')]);
+  const [accounts, metrics, passwordRequests, sites] = await Promise.all([apiRequest('admin/accounts'), apiRequest('admin/metrics'), apiRequest('admin/password-requests'), apiRequest('admin/sites')]);
   adminAccounts = accounts;
   adminMetrics = metrics;
   adminPasswordRequests = passwordRequests;
+  adminSites = sites;
+}
+
+async function refreshClientSites() {
+  try {
+    const sharedSites = await apiRequest('client/sites');
+    if (!Array.isArray(sharedSites)) return;
+    const previousById = new Map(state.sites.map((site) => [site.id, site]));
+    const sharedIds = new Set(sharedSites.map((site) => site.id));
+    const customSites = state.sites.filter((site) => !DEFAULT_SITE_IDS.has(site.id) && !String(site.id).startsWith('managed-'));
+    state.sites = [
+      ...sharedSites.map((site) => ({ ...site, favorite: Boolean(previousById.get(site.id)?.favorite) })),
+      ...customSites.filter((site) => !sharedIds.has(site.id))
+    ];
+    saveState();
+  } catch (error) {
+    console.warn('Shared site catalog unavailable; keeping office sites:', error.message);
+  }
 }
 
 async function refreshClientPasswordRequest() {
@@ -566,7 +589,8 @@ function renderAdmin() {
     return `<article class="account-row"><div class="account-main"><div class="account-title-line"><strong>${escapeHtml(account.officeName)}</strong><span class="account-status ${statusClass}">${escapeHtml(status)}</span></div><span>المستخدم: ${escapeHtml(account.username)} · المالك: ${escapeHtml(account.ownerName)} · الهاتف: ${escapeHtml(account.phone)}</span><small>ينتهي الاشتراك: ${escapeHtml(end)} · ${formatNumber(account.subscriptionDays)} يوم</small><small>تسجيلات الدخول: ${formatNumber(account.loginCount)} · آخر دخول: ${escapeHtml(lastLogin)}</small></div><div class="account-actions"><form class="renew-form" data-renew-form="${escapeHtml(account.id)}"><input name="days" type="number" min="1" max="36500" value="30" aria-label="أيام التجديد"><button class="secondary-btn" type="submit">تجديد بالأيام</button></form><details class="account-edit-details"><summary>تعديل بيانات الحساب</summary><form class="form-grid admin-form account-edit-form" data-edit-account-form="${escapeHtml(account.id)}"><label>اسم المستخدم<input name="username" value="${escapeHtml(account.username)}" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>اسم المكتب<input name="officeName" value="${escapeHtml(account.officeName)}" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" value="${escapeHtml(account.ownerName)}" required maxlength="120"></label><label>رقم الهاتف<input name="phone" value="${escapeHtml(account.phone)}" required maxlength="40"></label><label>كلمة مرور جديدة (اختياري)<input name="password" type="password" minlength="8" maxlength="1024" autocomplete="new-password" placeholder="اتركه فارغًا دون تغيير"></label><label class="account-toggle-label"><input name="isActive" type="checkbox" ${enabled ? 'checked' : ''}><span>الحساب مفعل</span></label><button class="primary-btn" type="submit">حفظ التعديلات</button></form></details><button class="danger-btn" data-delete-account="${escapeHtml(account.id)}" data-delete-username="${escapeHtml(account.username)}" type="button">حذف الحساب نهائيًا</button></div></article>`;
   }).join('');
   const requests = adminPasswordRequests.map((request) => `<article class="password-request-row"><div><strong>${escapeHtml(request.account?.office_name || 'مكتب')}</strong><small>المستخدم: ${escapeHtml(request.account?.username || '—')} · المالك: ${escapeHtml(request.account?.owner_name || '—')}</small><small>تاريخ الطلب: ${escapeHtml(new Date(request.createdAt).toLocaleString('ar-SA'))}</small></div><div class="request-actions"><button class="primary-btn" data-review-password-request="${escapeHtml(request.id)}" data-decision="approve">موافقة</button><button class="icon-btn danger" data-review-password-request="${escapeHtml(request.id)}" data-decision="reject" aria-label="رفض الطلب">رفض</button></div></article>`).join('');
-  return `<main class="admin-screen"><header class="admin-header"><div><p class="eyebrow">إدارة الاشتراكات والاستخدام</p><h1>لوحة مدير النظام</h1><p class="page-subtitle">إدارة حسابات المكاتب ومتابعة الاشتراكات والدخول.</p></div><button class="ghost-btn" data-logout>تسجيل الخروج</button></header><section class="summary-grid admin-stats" aria-label="إحصاءات النظام"><article class="summary-card"><span>حسابات نشطة</span><strong>${formatNumber(adminMetrics.activeAccounts)}</strong><small>من أصل ${formatNumber(adminMetrics.totalAccounts)}</small></article><article class="summary-card"><span>داخل مهلة التجديد</span><strong>${formatNumber(adminMetrics.graceAccounts)}</strong><small>مهلة خمسة أيام</small></article><article class="summary-card"><span>تسجيلات دخول المكاتب</span><strong>${formatNumber(adminMetrics.totalLogins)}</strong><small>منذ تفعيل عدّاد الدخول</small></article><article class="summary-card"><span>زوار فريدون تقريبًا</span><strong>${formatNumber(adminMetrics.uniqueVisitors)}</strong><small>معرّفات متصفحات، لا أشخاص مؤكّدين</small></article></section><p class="helper-text admin-privacy-note">يُحسب الزائر مرة لكل متصفح محفوظ فيه معرّف عشوائي. لا يُسجَّل عنوان IP أو اسم الزائر.</p><section class="panel admin-create"><div class="panel-heading"><div><p class="eyebrow">حساب جديد</p><h2>إنشاء حساب مكتب</h2></div></div><form id="createAccountForm" class="form-grid admin-form"><label>اسم المستخدم<input name="username" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>كلمة مرور مؤقتة<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>اسم المكتب<input name="officeName" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" required maxlength="120"></label><label>رقم الهاتف<input name="phone" required maxlength="40"></label><label>مدة الاشتراك بالأيام<input name="subscriptionDays" type="number" min="1" max="36500" required value="30"></label><button class="primary-btn" type="submit">إنشاء الحساب</button></form><p class="helper-text">شارك كلمة المرور المؤقتة مع صاحب المكتب بأمان. لا يُسمح بالتسجيل الذاتي.</p></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">طلبات تغيير كلمة المرور</p><h2>طلبات تنتظر موافقتك</h2></div></div>${requests || '<div class="small-empty">لا توجد طلبات معلقة.</div>'}</section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">المشتركون</p><h2>الحسابات المسجلة</h2></div><button class="ghost-btn" data-refresh-accounts>تحديث الإحصاءات والحسابات</button></div>${rows ? `<div class="account-list">${rows}</div>` : '<div class="small-empty">لا توجد حسابات بعد.</div>'}</section></main>`;
+  const catalogRows = adminSites.map((site) => `<details class="account-edit-details site-catalog-row"><summary>${imageMarkup(site, 'mini-image')} ${escapeHtml(site.name)} · ${escapeHtml(site.category)}</summary><form class="form-grid admin-form" data-edit-catalog-site="${escapeHtml(site.id)}"><label>اسم الموقع<input name="name" required maxlength="120" value="${escapeHtml(site.name)}"></label><label>التصنيف<input name="category" required maxlength="80" value="${escapeHtml(site.category)}"></label><label class="full-span">رابط الموقع<input name="url" type="url" required maxlength="2048" value="${escapeHtml(site.url)}"></label><label class="full-span">رابط الصورة (HTTPS)<input name="image" type="url" maxlength="2048" value="${escapeHtml(site.image || '')}" placeholder="https://example.com/logo.png"></label><label>ترتيب العرض<input name="sortOrder" type="number" min="0" max="1000000" value="${Number(site.sortOrder || 0)}"></label><button class="primary-btn" type="submit">حفظ الموقع</button><button class="danger-btn" type="button" data-delete-catalog-site="${escapeHtml(site.id)}">حذف الموقع</button></form></details>`).join('');
+  return `<main class="admin-screen"><header class="admin-header"><div><p class="eyebrow">إدارة الاشتراكات والاستخدام</p><h1>لوحة مدير النظام</h1><p class="page-subtitle">إدارة حسابات المكاتب ومتابعة الاشتراكات والدخول.</p></div><button class="ghost-btn" data-logout>تسجيل الخروج</button></header><section class="summary-grid admin-stats" aria-label="إحصاءات النظام"><article class="summary-card"><span>حسابات نشطة</span><strong>${formatNumber(adminMetrics.activeAccounts)}</strong><small>من أصل ${formatNumber(adminMetrics.totalAccounts)}</small></article><article class="summary-card"><span>داخل مهلة التجديد</span><strong>${formatNumber(adminMetrics.graceAccounts)}</strong><small>مهلة خمسة أيام</small></article><article class="summary-card"><span>تسجيلات دخول المكاتب</span><strong>${formatNumber(adminMetrics.totalLogins)}</strong><small>منذ تفعيل عدّاد الدخول</small></article><article class="summary-card"><span>زوار فريدون تقريبًا</span><strong>${formatNumber(adminMetrics.uniqueVisitors)}</strong><small>معرّفات متصفحات، لا أشخاص مؤكّدين</small></article></section><p class="helper-text admin-privacy-note">يُحسب الزائر مرة لكل متصفح محفوظ فيه معرّف عشوائي. لا يُسجَّل عنوان IP أو اسم الزائر.</p><section class="panel admin-create"><div class="panel-heading"><div><p class="eyebrow">حساب جديد</p><h2>إنشاء حساب مكتب</h2></div></div><form id="createAccountForm" class="form-grid admin-form"><label>اسم المستخدم<input name="username" required minlength="3" maxlength="40" pattern="[A-Za-z0-9._-]+" autocomplete="off"></label><label>كلمة مرور مؤقتة<input name="password" type="password" required minlength="8" autocomplete="new-password"></label><label>اسم المكتب<input name="officeName" required maxlength="120"></label><label>اسم صاحب المكتب<input name="ownerName" required maxlength="120"></label><label>رقم الهاتف<input name="phone" required maxlength="40"></label><label>مدة الاشتراك بالأيام<input name="subscriptionDays" type="number" min="1" max="36500" required value="30"></label><button class="primary-btn" type="submit">إنشاء الحساب</button></form><p class="helper-text">شارك كلمة المرور المؤقتة مع صاحب المكتب بأمان. لا يُسمح بالتسجيل الذاتي.</p></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">كتالوج مواقع المكاتب</p><h2>إضافة أو تعديل المواقع المشتركة</h2></div><span class="record-count">${adminSites.length}</span></div><p class="helper-text">التغييرات هنا تظهر للمكاتب عند تسجيل الدخول أو تحديث بياناتها. يمكنك تعديل الاسم والتصنيف والرابط والصورة.</p><form id="createCatalogSite" class="form-grid admin-form"><label>اسم الموقع<input name="name" required maxlength="120"></label><label>التصنيف<input name="category" required maxlength="80"></label><label class="full-span">رابط الموقع<input name="url" type="url" required maxlength="2048" placeholder="https://example.com"></label><label class="full-span">رابط الصورة (HTTPS)<input name="image" type="url" maxlength="2048" placeholder="https://example.com/logo.png"></label><label>ترتيب العرض<input name="sortOrder" type="number" min="0" max="1000000" value="1000"></label><button class="primary-btn" type="submit">إضافة الموقع</button></form><div class="manage-list">${catalogRows || '<div class="small-empty">لا توجد مواقع في الكتالوج.</div>'}</div></section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">طلبات تغيير كلمة المرور</p><h2>طلبات تنتظر موافقتك</h2></div></div>${requests || '<div class="small-empty">لا توجد طلبات معلقة.</div>'}</section><section class="panel admin-list"><div class="panel-heading"><div><p class="eyebrow">المشتركون</p><h2>الحسابات المسجلة</h2></div><button class="ghost-btn" data-refresh-accounts>تحديث الإحصاءات والحسابات</button></div>${rows ? `<div class="account-list">${rows}</div>` : '<div class="small-empty">لا توجد حسابات بعد.</div>'}</section></main>`;
 }
 
 function bindAdminEvents() {
@@ -641,6 +665,41 @@ function bindAdminEvents() {
       render();
     } catch (error) { showToast(error.message, 'error'); }
   }));
+  document.querySelector('#createCatalogSite')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const body = Object.fromEntries(data.entries());
+    body.sortOrder = Number(body.sortOrder || 1000);
+    try {
+      await apiRequest('admin/sites', { method: 'POST', body });
+      await refreshAdminAccounts();
+      showToast('تمت إضافة الموقع إلى قائمة جميع المكاتب.');
+      render();
+    } catch (error) { showToast(error.message || 'تعذر إضافة الموقع.', 'error'); }
+  });
+  document.querySelectorAll('[data-edit-catalog-site]').forEach((form) => form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    const body = Object.fromEntries(data.entries());
+    body.sortOrder = Number(body.sortOrder || 0);
+    try {
+      await apiRequest(`admin/sites/${encodeURIComponent(form.dataset.editCatalogSite)}`, { method: 'PUT', body });
+      await refreshAdminAccounts();
+      showToast('تم تحديث الموقع للمكاتب.');
+      render();
+    } catch (error) { showToast(error.message || 'تعذر تحديث الموقع.', 'error'); }
+  }));
+  document.querySelectorAll('[data-delete-catalog-site]').forEach((button) => button.addEventListener('click', async () => {
+    const site = adminSites.find((item) => item.id === button.dataset.deleteCatalogSite);
+    if (!site || !window.confirm(`حذف «${site.name}» من كتالوج جميع المكاتب؟`)) return;
+    button.disabled = true;
+    try {
+      await apiRequest(`admin/sites/${encodeURIComponent(site.id)}`, { method: 'DELETE' });
+      await refreshAdminAccounts();
+      showToast('تم حذف الموقع من كتالوج المكاتب.');
+      render();
+    } catch (error) { showToast(error.message || 'تعذر حذف الموقع.', 'error'); if (button.isConnected) button.disabled = false; }
+  }));
 }
 
 async function restoreSession() {
@@ -655,6 +714,7 @@ async function restoreSession() {
       const remote = await apiRequest('client/state');
       authSession.userId = remote.userId || authSession.userId;
       applyAccountState(remote);
+      await refreshClientSites();
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
       await refreshClientPasswordRequest();
@@ -672,14 +732,13 @@ function renderShell() {
     <aside class="sidebar">
       <div class="brand-block">
         <div class="brand-mark">SH</div>
-        <div><strong>Service Hub</strong><span>مركز الخدمات</span></div>
+        <div><strong>Service Hub</strong><span>Developer: Mohamed Ashraf</span></div>
       </div>
       <section class="sidebar-office"><strong>${escapeHtml(authSession.account?.officeName || state.officeName)}</strong><span>${escapeHtml(authSession.account?.ownerName || '')}</span></section>
       <nav class="main-nav" aria-label="التنقل الرئيسي">
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        <a class="nav-item sidebar-download" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.6-Setup.exe" target="_blank" rel="noopener noreferrer">${icon('download')}<span>تثبيت Windows</span></a>
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
