@@ -13,6 +13,9 @@ import clientAccountRoute from '../api/client/account.js';
 import clientPasswordRequestRoute from '../api/client/password-request.js';
 import adminPasswordRequestsRoute from '../api/admin/password-requests.js';
 import reviewPasswordRequestRoute from '../api/admin/password-requests/[requestId].js';
+import adminSitesRoute from '../api/admin/sites.js';
+import clientSitesRoute from '../api/client/sites.js';
+import windowsDownloadRoute from '../api/download/windows.js';
 import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, renderDailyReportHtml, renderMonthlyReportHtml, renderRangeReportHtml } from '../src/reports.js';
 import { buildOfficeWhatsappUrl, normalizeWhatsappNumber, publicServiceCount, renderPublicOfficePage } from '../src/public-page.js';
 
@@ -114,6 +117,21 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
   } finally {
     restoreEnv(original);
   }
+});
+
+test('Windows download endpoint redirects to the setup asset of the latest GitHub release', async () => {
+  const target = 'https://github.com/macs191/albagmi/releases/download/v0.1.7/ServiceHub-Desktop-0.1.7-Setup.exe';
+  const response = await withMockFetch(async (url, options = {}) => {
+    assert.equal(String(url), 'https://api.github.com/repos/macs191/albagmi/releases/latest');
+    assert.equal(options.headers?.['User-Agent'], 'ServiceHub-Desktop-Download');
+    return new Response(JSON.stringify({ assets: [
+      { name: 'ServiceHub-Desktop-0.1.7-Setup.exe.blockmap', browser_download_url: `${target}.blockmap` },
+      { name: 'ServiceHub-Desktop-0.1.7-Setup.exe', browser_download_url: target }
+    ] }), { status: 200 });
+  }, () => callApi('GET', '/api/download/windows'));
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, target);
+  assert.match(response.headers['cache-control'], /s-maxage=300/);
 });
 
 test('public service buttons use the office account WhatsApp phone and include the selected service', () => {
@@ -528,7 +546,7 @@ test('Vercel rewrites the protected-looking /max route to the SPA entry only', a
 });
 
 test('Vercel has explicit entry points for every multi-segment API route', () => {
-  for (const route of [adminLoginRoute, adminAccountsRoute, adminMetricsRoute, updateAccountRoute, renewAccountRoute, clientStateRoute, clientAccountRoute, clientPasswordRequestRoute, adminPasswordRequestsRoute, reviewPasswordRequestRoute]) {
+  for (const route of [adminLoginRoute, adminAccountsRoute, adminMetricsRoute, updateAccountRoute, renewAccountRoute, clientStateRoute, clientAccountRoute, clientPasswordRequestRoute, adminPasswordRequestsRoute, reviewPasswordRequestRoute, adminSitesRoute, clientSitesRoute, windowsDownloadRoute]) {
     assert.equal(route, handler);
   }
 });
@@ -712,7 +730,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const updaterWorkflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
   const updaterManifestScript = await readFile(new URL('../scripts/create-update-manifest.mjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.7');
+  assert.equal(packageJson.version, '0.1.8');
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-[^" ]+-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
@@ -734,7 +752,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /تعذر الاتصال بموقع الخدمة/);
 });
 
-test('sales and service UI hides redundant chrome and requires the deletion dialog and manual item path', async () => {
+test('sales and service UI keeps account controls in the sidebar, downloads from settings, and hides redundant chrome', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   assert.match(source, /id="embeddedSiteHost"/);
@@ -743,6 +761,11 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
   assert.doesNotMatch(source, /الموقع داخل النظام · لا يظهر الرابط/);
   assert.doesNotMatch(source, /إذا ظهرت رسالة «لا يوجد اتصال»/);
   assert.doesNotMatch(source, /sidebar-download|تثبيت Windows/);
+  assert.match(source, /class="sidebar-account"/);
+  assert.doesNotMatch(source, /البيانات محفوظة في Supabase|<header class="topbar"/);
+  assert.match(source, /class="download-desktop-btn" href="\$\{escapeHtml\(windowsDownloadUrl\)\}"/);
+  assert.match(source, /api\/download\/windows/);
+  assert.match(source, /const sites = await apiRequest\('admin\/sites'\);[\s\S]*?catch \(error\)[\s\S]*?adminSites = \[\];/);
   assert.match(source, /Developer: Mohamed Ashraf/);
   assert.doesNotMatch(source, /موقع محفوظ/);
   assert.match(source, /value="__custom__">إضافة بند يدوياً/);

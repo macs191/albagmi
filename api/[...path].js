@@ -580,6 +580,25 @@ export default async function handler(req, res) {
   try {
     const segments = pathSegments(req);
     const method = req.method;
+    if (segments.length === 2 && segments[0] === 'download' && segments[1] === 'windows' && method === 'GET') {
+      let releaseResponse;
+      try {
+        releaseResponse = await fetch('https://api.github.com/repos/macs191/albagmi/releases/latest', {
+          headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'ServiceHub-Desktop-Download' },
+          signal: AbortSignal.timeout(8000)
+        });
+      } catch { throw new HttpError(502, 'release_service_unavailable'); }
+      if (!releaseResponse.ok) throw new HttpError(502, 'release_service_unavailable');
+      const release = await releaseResponse.json();
+      const installer = Array.isArray(release.assets) ? release.assets.find((asset) => asset.name?.startsWith('ServiceHub-Desktop-') && asset.name.endsWith('-Setup.exe')) : null;
+      if (!installer || !/^https:\/\/github\.com\/macs191\/albagmi\/releases\/download\//.test(installer.browser_download_url || '')) {
+        throw new HttpError(404, 'windows_installer_unavailable');
+      }
+      res.statusCode = 302;
+      res.setHeader('Location', installer.browser_download_url);
+      res.setHeader('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=3600');
+      return res.end();
+    }
     if (segments.length === 1 && segments[0] === 'health' && method === 'GET') {
       const required = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'ALBAGMI_ADMIN_PASSWORD', 'ALBAGMI_ADMIN_JWT_SECRET'];
       const missing = required.filter((name) => !process.env[name]);
