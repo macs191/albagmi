@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { pbkdf2Sync } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import handler from '../api/[...path].js';
 import adminLoginRoute from '../api/admin/login.js';
@@ -13,9 +15,6 @@ import clientAccountRoute from '../api/client/account.js';
 import clientPasswordRequestRoute from '../api/client/password-request.js';
 import adminPasswordRequestsRoute from '../api/admin/password-requests.js';
 import reviewPasswordRequestRoute from '../api/admin/password-requests/[requestId].js';
-import adminSitesRoute from '../api/admin/sites.js';
-import clientSitesRoute from '../api/client/sites.js';
-import windowsDownloadRoute from '../api/download/windows.js';
 import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, renderDailyReportHtml, renderMonthlyReportHtml, renderRangeReportHtml } from '../src/reports.js';
 import { buildOfficeWhatsappUrl, normalizeWhatsappNumber, publicServiceCount, renderPublicOfficePage } from '../src/public-page.js';
 
@@ -546,9 +545,26 @@ test('Vercel rewrites the protected-looking /max route to the SPA entry only', a
 });
 
 test('Vercel has explicit entry points for every multi-segment API route', () => {
-  for (const route of [adminLoginRoute, adminAccountsRoute, adminMetricsRoute, updateAccountRoute, renewAccountRoute, clientStateRoute, clientAccountRoute, clientPasswordRequestRoute, adminPasswordRequestsRoute, reviewPasswordRequestRoute, adminSitesRoute, clientSitesRoute, windowsDownloadRoute]) {
+  for (const route of [adminLoginRoute, adminAccountsRoute, adminMetricsRoute, updateAccountRoute, renewAccountRoute, clientStateRoute, clientAccountRoute, clientPasswordRequestRoute, adminPasswordRequestsRoute, reviewPasswordRequestRoute]) {
     assert.equal(route, handler);
   }
+});
+
+test('Vercel Hobby deployment stays within its 12-function limit and uses the API catch-all for catalog/download paths', async () => {
+  const apiDirectory = dirname(fileURLToPath(new URL('../api/[...path].js', import.meta.url)));
+  const listJavaScriptFiles = async (directory) => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    const nested = await Promise.all(entries.map((entry) => entry.isDirectory()
+      ? listJavaScriptFiles(join(directory, entry.name))
+      : entry.isFile() && entry.name.endsWith('.js') ? [join(directory, entry.name)] : []));
+    return nested.flat();
+  };
+  const functions = await listJavaScriptFiles(apiDirectory);
+  const apiSource = await readFile(new URL('../api/[...path].js', import.meta.url), 'utf8');
+  assert.ok(functions.length <= 12, `Vercel Hobby allows 12 functions; found ${functions.length}`);
+  assert.ok(functions.some((file) => file.endsWith('[...path].js')));
+  assert.match(apiSource, /segments\[1\] === 'sites'/);
+  assert.match(apiSource, /segments\[1\] === 'windows'/);
 });
 
 test('office login form sends the client role required by the API', async () => {
