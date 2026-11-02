@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import { pbkdf2Sync } from 'node:crypto';
-import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import handler from '../api/[...path].js';
 import adminLoginRoute from '../api/admin/login.js';
@@ -107,7 +105,7 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
         assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
         return new Response('[]', { status: 200 });
       }
-      if (String(url).includes('/rest/v1/albagmi_site_visitors?select=visitor_id&limit=1') || String(url).includes('/rest/v1/albagmi_password_change_requests?select=id&limit=1') || String(url).includes('/rest/v1/albagmi_site_catalog?select=id&limit=1')) return new Response('[]', { status: 200 });
+      if (String(url).includes('/rest/v1/albagmi_site_visitors?select=visitor_id&limit=1') || String(url).includes('/rest/v1/albagmi_password_change_requests?select=id&limit=1')) return new Response('[]', { status: 200 });
       throw new Error(`Unexpected test URL: ${url}`);
     }, () => callApi('GET', '/api/health'));
     assert.equal(response.statusCode, 200);
@@ -116,21 +114,6 @@ test('health verifies Supabase Auth and both isolated albagmi tables', async () 
   } finally {
     restoreEnv(original);
   }
-});
-
-test('Windows download endpoint redirects to the setup asset of the latest GitHub release', async () => {
-  const target = 'https://github.com/macs191/albagmi/releases/download/v0.1.7/ServiceHub-Desktop-0.1.7-Setup.exe';
-  const response = await withMockFetch(async (url, options = {}) => {
-    assert.equal(String(url), 'https://api.github.com/repos/macs191/albagmi/releases/latest');
-    assert.equal(options.headers?.['User-Agent'], 'ServiceHub-Desktop-Download');
-    return new Response(JSON.stringify({ assets: [
-      { name: 'ServiceHub-Desktop-0.1.7-Setup.exe.blockmap', browser_download_url: `${target}.blockmap` },
-      { name: 'ServiceHub-Desktop-0.1.7-Setup.exe', browser_download_url: target }
-    ] }), { status: 200 });
-  }, () => callApi('GET', '/api/download/windows'));
-  assert.equal(response.statusCode, 302);
-  assert.equal(response.headers.location, target);
-  assert.match(response.headers['cache-control'], /s-maxage=300/);
 });
 
 test('public service buttons use the office account WhatsApp phone and include the selected service', () => {
@@ -192,58 +175,6 @@ test('admin logs in with a server-side password only; office login rejects admin
     const missingRole = await callApi('POST', '/api/login', { username: 'office1', password: 'office-test-password' });
     assert.equal(missingRole.statusCode, 400);
     assert.equal(missingRole.data.error, 'invalid_role');
-  } finally {
-    restoreEnv(original);
-  }
-});
-
-test('admin can securely list, add, edit, and delete shared sites', async () => {
-  const original = snapshotEnv();
-  setTestEnv();
-  const rows = [{ id: 'site-test', name: 'موقع اختبار', category: 'تجربة', url: 'https://example.com/', image: 'https://example.com/logo.png', sort_order: 20 }];
-  try {
-    const login = await callApi('POST', '/api/admin/login', { password: process.env.ALBAGMI_ADMIN_PASSWORD });
-    const headers = { authorization: `Bearer ${login.data.token}` };
-    await withMockFetch(async (url, options = {}) => {
-      const target = new URL(String(url));
-      assert.equal(target.pathname, '/rest/v1/albagmi_site_catalog');
-      assert.equal(options.headers?.Authorization, 'Bearer test-service-role-key');
-      if (options.method === undefined) return new Response(JSON.stringify(rows), { status: 200 });
-      if (options.method === 'POST') {
-        const row = JSON.parse(options.body);
-        rows.push(row);
-        return new Response(JSON.stringify([row]), { status: 201 });
-      }
-      if (options.method === 'PATCH') {
-        const id = target.searchParams.get('id')?.slice(3);
-        const row = JSON.parse(options.body);
-        const index = rows.findIndex((item) => item.id === id);
-        rows[index] = row;
-        return new Response(JSON.stringify([row]), { status: 200 });
-      }
-      if (options.method === 'DELETE') {
-        const id = target.searchParams.get('id')?.slice(3);
-        const index = rows.findIndex((item) => item.id === id);
-        rows.splice(index, 1);
-        return new Response(null, { status: 204 });
-      }
-      throw new Error(`Unexpected request method: ${options.method}`);
-    }, async () => {
-      const list = await callApi('GET', '/api/admin/sites', undefined, headers);
-      assert.equal(list.statusCode, 200);
-      assert.equal(list.data[0].id, 'site-test');
-      const created = await callApi('POST', '/api/admin/sites', { name: 'بوابة جديدة', category: 'تجربة', url: 'https://example.net', image: '', sortOrder: 30 }, headers);
-      assert.equal(created.statusCode, 201);
-      assert.match(created.data.id, /^managed-/);
-      const updated = await callApi('PUT', `/api/admin/sites/${created.data.id}`, { name: 'بوابة معدلة', category: 'أعمال', url: 'https://example.org', image: '', sortOrder: 40 }, headers);
-      assert.equal(updated.statusCode, 200);
-      assert.equal(updated.data.name, 'بوابة معدلة');
-      const deleted = await callApi('DELETE', `/api/admin/sites/${created.data.id}`, undefined, headers);
-      assert.equal(deleted.statusCode, 200);
-      assert.equal(deleted.data.deleted, true);
-    });
-    const unauthenticated = await callApi('POST', '/api/admin/sites', { name: 'X', category: 'Y', url: 'https://example.com' });
-    assert.equal(unauthenticated.statusCode, 401);
   } finally {
     restoreEnv(original);
   }
@@ -550,23 +481,6 @@ test('Vercel has explicit entry points for every multi-segment API route', () =>
   }
 });
 
-test('Vercel Hobby deployment stays within its 12-function limit and uses the API catch-all for catalog/download paths', async () => {
-  const apiDirectory = dirname(fileURLToPath(new URL('../api/[...path].js', import.meta.url)));
-  const listJavaScriptFiles = async (directory) => {
-    const entries = await readdir(directory, { withFileTypes: true });
-    const nested = await Promise.all(entries.map((entry) => entry.isDirectory()
-      ? listJavaScriptFiles(join(directory, entry.name))
-      : entry.isFile() && entry.name.endsWith('.js') ? [join(directory, entry.name)] : []));
-    return nested.flat();
-  };
-  const functions = await listJavaScriptFiles(apiDirectory);
-  const apiSource = await readFile(new URL('../api/[...path].js', import.meta.url), 'utf8');
-  assert.ok(functions.length <= 12, `Vercel Hobby allows 12 functions; found ${functions.length}`);
-  assert.ok(functions.some((file) => file.endsWith('[...path].js')));
-  assert.match(apiSource, /segments\[1\] === 'sites'/);
-  assert.match(apiSource, /segments\[1\] === 'windows'/);
-});
-
 test('office login form sends the client role required by the API', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   assert.match(source, /role: 'client', username: data\.get\('username'\), password: data\.get\('password'\)/);
@@ -743,19 +657,11 @@ test('office subscription starts when the system manager activates the account',
 test('Desktop packaging, browser tabs, and service persistence use the intended platform behavior', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
-  const updaterWorkflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
-  const updaterManifestScript = await readFile(new URL('../scripts/create-update-manifest.mjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.8');
-  assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-[^" ]+-Setup\.exe/);
+  assert.equal(packageJson.version, '0.1.6');
+  assert.match(appSource, /ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
-  assert.deepEqual(packageJson.build.publish, { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
-  assert.match(electronMain, /autoUpdater\.checkForUpdates\(\)/);
-  assert.match(updaterWorkflow, /gh release upload \$tag \$installer \$blockmap \$metadata/);
-  assert.match(updaterWorkflow, /create-update-manifest\.mjs/);
-  assert.match(updaterManifestScript, /createHash\('sha512'\)/);
-  assert.match(updaterManifestScript, /blockMapSize/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
   assert.equal(packageJson.build.nsis.createDesktopShortcut, true);
   assert.match(appSource, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/);
@@ -768,7 +674,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /تعذر الاتصال بموقع الخدمة/);
 });
 
-test('sales and service UI keeps account controls in the sidebar, downloads from settings, and hides redundant chrome', async () => {
+test('sales and service UI hides redundant chrome and requires the deletion dialog and manual item path', async () => {
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   assert.match(source, /id="embeddedSiteHost"/);
@@ -776,13 +682,7 @@ test('sales and service UI keeps account controls in the sidebar, downloads from
   assert.match(styles, /\.app-shell\.site-active \.sidebar \{ display: none; \}/);
   assert.doesNotMatch(source, /الموقع داخل النظام · لا يظهر الرابط/);
   assert.doesNotMatch(source, /إذا ظهرت رسالة «لا يوجد اتصال»/);
-  assert.doesNotMatch(source, /sidebar-download|تثبيت Windows/);
-  assert.match(source, /class="sidebar-account"/);
-  assert.doesNotMatch(source, /البيانات محفوظة في Supabase|<header class="topbar"/);
-  assert.match(source, /class="download-desktop-btn" href="\$\{escapeHtml\(windowsDownloadUrl\)\}"/);
-  assert.match(source, /api\/download\/windows/);
-  assert.match(source, /const sites = await apiRequest\('admin\/sites'\);[\s\S]*?catch \(error\)[\s\S]*?adminSites = \[\];/);
-  assert.match(source, /Developer: Mohamed Ashraf/);
+  assert.match(source, /sidebar-download/);
   assert.doesNotMatch(source, /موقع محفوظ/);
   assert.match(source, /value="__custom__">إضافة بند يدوياً/);
   assert.match(source, /id="reportDialogStart"/);
