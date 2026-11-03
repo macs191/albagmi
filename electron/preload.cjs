@@ -3,6 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('desktopBridge', {
   syncSiteTabs: (tabs, activeId, bounds) => ipcRenderer.send('sync-site-tabs', tabs, activeId, bounds),
   printActiveSite: () => ipcRenderer.invoke('print-active-site'),
+  getRememberedLogin: () => ipcRenderer.invoke('get-remembered-login'),
+  saveRememberedLogin: (credentials) => ipcRenderer.invoke('save-remembered-login', credentials),
+  clearRememberedLogin: () => ipcRenderer.invoke('clear-remembered-login'),
   onSitePopup: (callback) => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, request) => callback(request);

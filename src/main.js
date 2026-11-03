@@ -5,6 +5,8 @@ import { renderPublicOfficePage, renderPublicPageLoading, renderPublicPageUnavai
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
+const NOTEPAD_STORAGE_KEY = 'servicehub-notepad-v1';
+const WHATSAPP_WEB = { id: 'servicehub-whatsapp-web', name: 'WhatsApp', url: 'https://web.whatsapp.com/', image: '' };
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const todayKey = () => {
   const d = new Date();
@@ -41,6 +43,7 @@ let sessionCheckTimer;
 let currentView = getViewFromHash();
 let openSiteTabs = [];
 let activeSiteTabId = null;
+let notepadText = loadNotepad();
 let clientPasswordRequest = null;
 let adminPasswordRequests = [];
 let searchTerm = '';
@@ -195,7 +198,23 @@ function saveState(deletionPassword, immediate = false) {
 
 function getViewFromHash() {
   const value = window.location.hash.replace('#', '');
-  return ['sales', 'settings'].includes(value) ? value : 'home';
+  return ['sales', 'settings', 'notepad'].includes(value) ? value : 'home';
+}
+
+function notepadStorageKey() {
+  const identity = authSession?.userId ? `uid:${authSession.userId}` : `username:${authSession?.account?.username || 'current'}`;
+  return `${NOTEPAD_STORAGE_KEY}:${identity}`;
+}
+
+function loadNotepad() {
+  try { return localStorage.getItem(notepadStorageKey()) || ''; } catch { return ''; }
+}
+
+function saveNotepad(value) {
+  notepadText = String(value || '');
+  localStorage.setItem(notepadStorageKey(), notepadText);
+  const status = document.querySelector('#notepadSaveStatus');
+  if (status) status.textContent = 'تم الحفظ على هذا الجهاز';
 }
 
 function isAdminRoute() {
@@ -243,6 +262,8 @@ function safeUrl(value = '') {
 function icon(name, size = 20) {
   const paths = {
     home: '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"/><path d="M9 21v-6h6v6"/>',
+    notepad: '<path d="M8 3h8l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h8V3M8 13h8M8 17h8"/>',
+    whatsapp: '<path d="M20.5 11.5a8.5 8.5 0 0 1-12.4 7.6L3 20l.9-4.8A8.5 8.5 0 1 1 20.5 11.5Z"/><path d="M8 8.5c.5 2.5 2 4 4.5 5l1.3-1.2 2 .9c.2 1.5-.8 2.4-2.4 2.3-3.7-.5-6.4-3.1-6.8-6.5-.1-1.3.6-2.2 1.8-2.4z"/>',
     sales: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/><path d="M15 6h3v3"/>',
     settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 1.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.1h-2.6V20a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1-1.8-1.8.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H6v-2.6h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1 1.8-1.8.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V5h2.6v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.8 1.8-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1v2.6h-.1a1.7 1.7 0 0 0-1.6 1Z"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
@@ -503,10 +524,18 @@ async function handleLogin(event) {
     saveSession({ ...result, account: { ...result.account, ...(result.subscription || {}) } });
     if (result.role === 'client') {
       const remote = await apiRequest('client/state');
+      authSession.userId = remote.userId || authSession.userId;
+      notepadText = loadNotepad();
       applyAccountState(remote);
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
       await refreshClientPasswordRequest();
+      if (window.desktopBridge?.saveRememberedLogin) {
+        try {
+          const remembered = await window.desktopBridge.saveRememberedLogin({ username: data.get('username'), password: data.get('password') });
+          if (!remembered) showToast('تعذر حفظ الدخول بأمان على هذا الجهاز؛ سيظل بإمكانك تسجيل الدخول يدويًا.', 'error');
+        } catch { showToast('تم الدخول، لكن تعذر حفظ بيانات الدخول على هذا الجهاز.', 'error'); }
+      }
       if (!remote.appState || !Object.keys(remote.appState).length) saveState();
       startSessionCheck();
     } else {
@@ -646,7 +675,42 @@ function bindAdminEvents() {
 async function restoreSession() {
   if (isAdminRoute() && authSession?.role === 'client') { render(); return; }
   if (!isAdminRoute() && authSession?.role === 'admin') saveSession(null);
-  if (!authSession?.token) { render(); return; }
+  if (!authSession?.token) {
+    render();
+    if (!isAdminRoute() && window.desktopBridge?.getRememberedLogin) {
+      let credentials = null;
+      try {
+        credentials = await window.desktopBridge.getRememberedLogin();
+        if (credentials?.username && credentials?.password) {
+          const result = await apiRequest('login', { method: 'POST', token: null, body: { role: 'client', username: credentials.username, password: credentials.password } });
+          saveSession({ ...result, account: { ...result.account, ...(result.subscription || {}) } });
+          const remote = await apiRequest('client/state');
+          authSession.userId = remote.userId || authSession.userId;
+          notepadText = loadNotepad();
+          applyAccountState(remote);
+          authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
+          saveSession(authSession);
+          await refreshClientPasswordRequest();
+          if (!remote.appState || !Object.keys(remote.appState).length) saveState();
+          startSessionCheck();
+          currentView = 'home';
+          render();
+          return;
+        }
+      } catch (error) {
+        saveSession(null);
+        authMessage = error.code === 'account_disabled' ? 'الحساب المحفوظ موقوف. أدخل بيانات حساب آخر أو تواصل مع المدير.' : error.code === 'subscription_locked' ? 'انتهت مهلة الحساب المحفوظ. تواصل مع المدير لتجديد الاشتراك.' : 'تعذر الدخول تلقائيًا بالبيانات المحفوظة؛ تحقق منها وسجّل الدخول يدويًا.';
+        render();
+        const form = document.querySelector('#loginForm');
+        if (form) {
+          form.elements.username.value = credentials?.username || '';
+          form.elements.password.value = credentials?.password || '';
+        }
+        return;
+      }
+    }
+    return;
+  }
   try {
     if (authSession.role === 'admin') await refreshAdminAccounts();
     else {
@@ -654,6 +718,7 @@ async function restoreSession() {
       authSession.account = { ...authSession.account, ...account };
       const remote = await apiRequest('client/state');
       authSession.userId = remote.userId || authSession.userId;
+      notepadText = loadNotepad();
       applyAccountState(remote);
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
@@ -679,13 +744,13 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        <a class="nav-item sidebar-download" href="https://github.com/macs191/albagmi/releases/latest/download/ServiceHub-Desktop-0.1.6-Setup.exe" target="_blank" rel="noopener noreferrer">${icon('download')}<span>تثبيت Windows</span></a>
+        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item" data-open-whatsapp>${icon('whatsapp')}<span>WhatsApp</span></button>` : ''}
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' ? renderNotepad() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
@@ -713,6 +778,10 @@ function renderHome() {
     <div class="section-heading"><div><h2>المواقع المتاحة</h2></div></div>
     ${filteredSites.length ? `<div class="sites-grid">${filteredSites.map(renderSiteCard).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon('search', 28)}</div><h3>لا توجد نتائج</h3><p>جرّب كلمة بحث مختلفة أو أضف موقعًا جديدًا من الإعدادات.</p></div>`}
   </section>`;
+}
+
+function renderNotepad() {
+  return `<section class="notepad-view"><div class="view-title-row"><div><p class="eyebrow">مساحة خاصة على هذا الجهاز</p><h1>Notepad</h1><p class="page-subtitle">اكتب أو الصق بيانات مؤقتة؛ تُحفظ تلقائيًا على هذا الجهاز ولا تُرسل إلى Supabase.</p></div><button class="secondary-btn" id="clearNotepad" type="button">مسح المفكرة</button></div><label class="notepad-paper"><span class="sr-only">ملاحظات مؤقتة</span><textarea id="notepadText" spellcheck="false" placeholder="اكتب أو الصق بيانات العميل هنا…">${escapeHtml(notepadText)}</textarea></label><div class="notepad-footer"><span id="notepadSaveStatus" aria-live="polite">تم الحفظ على هذا الجهاز</span><span>لا تُمسح الملاحظات عند تسجيل الخروج؛ امسحها يدويًا عند الانتهاء.</span></div></section>`;
 }
 
 function renderSiteCard(site) {
@@ -811,6 +880,15 @@ function bindViewEvents() {
   mountPublicPageSettings();
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
+  document.querySelector('[data-open-whatsapp]')?.addEventListener('click', () => openSiteTab(WHATSAPP_WEB));
+  document.querySelector('#notepadText')?.addEventListener('input', (event) => saveNotepad(event.currentTarget.value));
+  document.querySelector('#clearNotepad')?.addEventListener('click', () => {
+    if (!notepadText || !window.confirm('هل تريد مسح كل محتوى المفكرة من هذا الجهاز؟')) return;
+    notepadText = '';
+    localStorage.removeItem(notepadStorageKey());
+    render();
+    document.querySelector('#notepadText')?.focus();
+  });
   document.querySelector('[data-home-tab]')?.addEventListener('click', () => navigate('home'));
   document.querySelector('[data-print-site]')?.addEventListener('click', () => window.desktopBridge?.printActiveSite?.());
   document.querySelectorAll('[data-activate-site]').forEach((button) => button.addEventListener('click', () => { activeSiteTabId = button.dataset.activateSite; render(); }));

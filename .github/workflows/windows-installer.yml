@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.6
+      - v0.1.9
 
 permissions:
   contents: write
@@ -37,8 +37,8 @@ jobs:
         env:
           VITE_API_BASE_URL: https://albagmi.vercel.app
 
-      - name: Upload installer to GitHub Release
+      - name: Publish installer on GitHub Release
         shell: pwsh
-        run: gh release upload $env:GITHUB_REF_NAME release/ServiceHub-Desktop-0.1.6-Setup.exe --repo $env:GITHUB_REPOSITORY --clobber
+        run: gh release create $env:GITHUB_REF_NAME release/ServiceHub-Desktop-0.1.9-Setup.exe --title "Service Hub Desktop 0.1.9" --notes "مفكرة محلية مشفرة الحفظ، تبويب WhatsApp Web، وإعادة تسجيل دخول ميسّرة." --latest --repo $env:GITHUB_REPOSITORY
         env:
           GH_TOKEN: ${{ github.token }}

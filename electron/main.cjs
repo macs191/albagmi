@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -6,6 +6,24 @@ let mainWindow;
 const siteViews = new Map();
 const siteSession = () => session.fromPartition('persist:servicehub-sites');
 let downloadHandlerConfigured = false;
+let sitePermissionsConfigured = false;
+
+function isWhatsAppUrl(value) {
+  try { return new URL(String(value)).hostname.toLowerCase() === 'web.whatsapp.com'; }
+  catch { return false; }
+}
+
+function configureSitePermissions() {
+  if (sitePermissionsConfigured) return;
+  sitePermissionsConfigured = true;
+  const partition = siteSession();
+  partition.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
+    callback(permission === 'notifications' && isWhatsAppUrl(details.requestingUrl || webContents?.getURL()));
+  });
+  partition.setPermissionCheckHandler((webContents, permission, requestingOrigin) => (
+    permission === 'notifications' && isWhatsAppUrl(requestingOrigin || webContents?.getURL())
+  ));
+}
 
 function configureDownloads() {
   if (downloadHandlerConfigured) return;
@@ -20,6 +38,33 @@ function configureDownloads() {
     while (fs.existsSync(candidate)) candidate = path.join(directory, `${stem} (${counter++})${extension}`);
     item.setSavePath(candidate);
   });
+}
+
+function rememberedLoginPath() {
+  return path.join(app.getPath('userData'), 'remembered-login.json');
+}
+
+function readRememberedLogin() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(rememberedLoginPath(), 'utf8'));
+    if (!safeStorage.isEncryptionAvailable() || typeof saved.username !== 'string' || typeof saved.password !== 'string') return null;
+    return { username: saved.username, password: safeStorage.decryptString(Buffer.from(saved.password, 'base64')) };
+  } catch { return null; }
+}
+
+function saveRememberedLogin(credentials) {
+  const username = String(credentials?.username || '').trim();
+  const password = String(credentials?.password || '');
+  if (!username || !password || username.length > 40 || password.length > 1024 || !safeStorage.isEncryptionAvailable()) return false;
+  const file = rememberedLoginPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ username, password: safeStorage.encryptString(password).toString('base64') }), { mode: 0o600 });
+  return true;
+}
+
+function clearRememberedLogin() {
+  try { fs.unlinkSync(rememberedLoginPath()); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return true;
 }
 
 function safeHttpUrl(value) {
@@ -56,9 +101,11 @@ function createSiteView(tab) {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      session: siteSession()
+      session: siteSession(),
+      backgroundThrottling: false
     }
   });
+  view.webContents.setAudioMuted(false);
   view.webContents.setWindowOpenHandler(({ url }) => {
     const safeUrl = safeHttpUrl(url);
     if (safeUrl && mainWindow && !mainWindow.isDestroyed()) {
@@ -75,6 +122,7 @@ function createSiteView(tab) {
     if (isMainFrame) loadConnectionError(view, validatedUrl || tab.url, errorCode, description);
   });
   configureDownloads();
+  configureSitePermissions();
   mainWindow.contentView.addChildView(view);
   siteViews.set(tab.id, { view, url: tab.url });
   view.webContents.loadURL(tab.url).catch(() => {});
@@ -144,6 +192,9 @@ function createMainWindow() {
 
 app.whenReady().then(() => {
   ipcMain.on('sync-site-tabs', (_event, tabs, activeId, bounds) => syncSiteTabs(tabs, activeId, bounds));
+  ipcMain.handle('get-remembered-login', () => readRememberedLogin());
+  ipcMain.handle('save-remembered-login', (_event, credentials) => saveRememberedLogin(credentials));
+  ipcMain.handle('clear-remembered-login', () => clearRememberedLogin());
   ipcMain.handle('print-active-site', () => {
     const active = [...siteViews.values()].find(({ view }) => view.getVisible());
     if (!active) return false;

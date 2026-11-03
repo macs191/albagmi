@@ -657,9 +657,14 @@ test('office subscription starts when the system manager activates the account',
 test('Desktop packaging, browser tabs, and service persistence use the intended platform behavior', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+  const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.6');
-  assert.match(appSource, /ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
+  assert.equal(packageJson.version, '0.1.9');
+  assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
+  assert.match(appSource, /data-nav="notepad"/);
+  assert.match(appSource, /data-open-whatsapp/);
+  assert.match(appSource, /https:\/\/web\.whatsapp\.com\//);
+  assert.match(appSource, /servicehub-notepad-v1/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
   assert.match(packageJson.scripts.desktop, /vite build --base=\.\//);
@@ -670,6 +675,15 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(appSource, /addEventListener\('resize', scheduleDesktopSiteSync/);
   assert.match(appSource, /Math\.max\(rect\.width, window\.innerWidth - rect\.left\)/);
   assert.match(electronMain, /persist:servicehub-sites/);
+  assert.match(electronMain, /backgroundThrottling: false/);
+  assert.match(electronMain, /setAudioMuted\(false\)/);
+  assert.match(electronMain, /setPermissionRequestHandler/);
+  assert.match(electronMain, /permission === 'notifications' && isWhatsAppUrl/);
+  assert.match(electronMain, /safeStorage\.encryptString/);
+  assert.match(electronMain, /safeStorage\.decryptString/);
+  assert.match(preload, /getRememberedLogin/);
+  assert.match(preload, /saveRememberedLogin/);
+  assert.match(appSource, /تعذر الدخول تلقائيًا بالبيانات المحفوظة/);
   assert.match(electronMain, /did-fail-load/);
   assert.match(electronMain, /تعذر الاتصال بموقع الخدمة/);
 });
@@ -682,7 +696,10 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
   assert.match(styles, /\.app-shell\.site-active \.sidebar \{ display: none; \}/);
   assert.doesNotMatch(source, /الموقع داخل النظام · لا يظهر الرابط/);
   assert.doesNotMatch(source, /إذا ظهرت رسالة «لا يوجد اتصال»/);
-  assert.match(source, /sidebar-download/);
+  assert.doesNotMatch(source, /sidebar-download|تثبيت Windows/);
+  assert.match(source, /function renderNotepad\(\)/);
+  assert.match(source, /localStorage\.setItem\(notepadStorageKey\(\), notepadText\)/);
+  assert.match(source, /مسح المفكرة/);
   assert.doesNotMatch(source, /موقع محفوظ/);
   assert.match(source, /value="__custom__">إضافة بند يدوياً/);
   assert.match(source, /id="reportDialogStart"/);
