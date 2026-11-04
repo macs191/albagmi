@@ -15,6 +15,8 @@ import adminPasswordRequestsRoute from '../api/admin/password-requests.js';
 import reviewPasswordRequestRoute from '../api/admin/password-requests/[requestId].js';
 import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, renderDailyReportHtml, renderMonthlyReportHtml, renderRangeReportHtml } from '../src/reports.js';
 import { buildOfficeWhatsappUrl, normalizeWhatsappNumber, publicServiceCount, renderPublicOfficePage } from '../src/public-page.js';
+import { bankBalance, bankLedger, bankMovementTotals, filterBankLedger } from '../src/banks.js';
+import { renderPaymentMethodFields } from '../src/bank-view.js';
 
 const ENV_KEYS = [
   'SUPABASE_URL',
@@ -659,7 +661,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.9');
+  assert.equal(packageJson.version, '0.1.10');
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
   assert.match(appSource, /data-open-whatsapp/);
@@ -707,6 +709,63 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
   assert.match(source, /id="recordDeleteForm"/);
   assert.match(source, /recordDeletionProtection/);
   assert.match(styles, /\.modal-backdrop/);
+});
+
+test('bank ledger reconciles deposits, withdrawals, transfers, bank sales, expenses and date filters', () => {
+  const accounts = [{ id: 'bank-a', name: 'الأول', openingBalance: 100 }, { id: 'bank-b', name: 'الثاني', openingBalance: 40 }];
+  const operations = [
+    { id: 'd1', type: 'deposit', bankAccountId: 'bank-a', amount: 25, dateKey: '2026-11-03', createdAt: '2026-11-03T09:00:00Z' },
+    { id: 'w1', type: 'withdrawal', bankAccountId: 'bank-a', amount: 5, dateKey: '2026-11-03', createdAt: '2026-11-03T10:00:00Z' },
+    { id: 't1', type: 'transfer', bankAccountId: 'bank-a', toBankAccountId: 'bank-b', amount: 30, dateKey: '2026-11-04', createdAt: '2026-11-04T11:00:00Z' },
+    { id: 'a1', type: 'adjustment', bankAccountId: 'bank-b', delta: -2, amount: 2, dateKey: '2026-11-05', createdAt: '2026-11-05T12:00:00Z' }
+  ];
+  const transactions = [
+    { id: 'sale-bank', paymentMethod: 'bank', bankAccountId: 'bank-a', amount: 50, customer: 'سارة', siteName: 'تأمين', dateKey: '2026-11-05', createdAt: '2026-11-05T13:00:00Z' },
+    { id: 'sale-cash', paymentMethod: 'cash', amount: 99, dateKey: '2026-11-05', createdAt: '2026-11-05T13:30:00Z' }
+  ];
+  const expenses = [{ id: 'expense-bank', paymentMethod: 'bank', bankAccountId: 'bank-a', amount: 10, description: 'وقود', dateKey: '2026-11-05', createdAt: '2026-11-05T14:00:00Z' }];
+  assert.equal(bankBalance(accounts[0], operations, transactions, expenses), 130);
+  assert.equal(bankBalance(accounts[1], operations, transactions, expenses), 68);
+  const aLedger = bankLedger('bank-a', accounts, operations, transactions, expenses);
+  const daily = filterBankLedger(aLedger, 'daily', '2026-11-05');
+  assert.equal(daily.length, 2);
+  assert.deepEqual(bankMovementTotals(daily), { incoming: 50, outgoing: 10, net: 40, count: 2 });
+  assert.equal(filterBankLedger(aLedger, 'monthly', '2026-11').length, 5);
+  const bTransfer = bankLedger('bank-b', accounts, operations, transactions, expenses).find((entry) => entry.title.includes('تحويل من'));
+  assert.equal(bTransfer.amount, 30);
+});
+
+test('bank controls and payment method fields are Windows-only and image links remain safe', async () => {
+  const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const viewSource = await readFile(new URL('../src/bank-view.js', import.meta.url), 'utf8');
+  const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
+  const fields = renderPaymentMethodFields('transaction', [{ id: 'b1', name: 'الراجحي' }]);
+  assert.match(appSource, /currentView === 'banks' && window\.desktopBridge\?\.syncSiteTabs \? renderBanks\(\)/);
+  assert.match(appSource, /if \(!window\.desktopBridge\?\.syncSiteTabs \|\| currentView !== 'sales'\) return/);
+  assert.match(appSource, /paymentMethod, bankAccountId/);
+  assert.match(viewSource, /url\.protocol === 'https:'/);
+  assert.match(fields, /value="cash">نقدي/);
+  assert.match(fields, /value="bank">بنكي/);
+  assert.match(fields, /الراجحي/);
+  assert.match(electronMain, /browserCompatibleUserAgent/);
+  assert.match(electronMain, /setUserAgent\(browserCompatibleUserAgent\)/);
+  assert.match(electronMain, /isWhatsAppUrl\(tab\.url\)/);
+});
+
+test('A4 daily and range reports include payment method and bank name', () => {
+  const report = {
+    dateKey: '2026-11-05', startKey: '2026-11-05', endKey: '2026-11-05', days: [],
+    transactions: [{ customer: 'عميل', siteName: 'تأمين', amount: 120, paymentMethod: 'bank', bankName: 'الراجحي', dateKey: '2026-11-05', createdAt: '2026-11-05T12:00:00Z' }],
+    expenses: [{ description: 'رسوم', amount: 10, paymentMethod: 'cash', dateKey: '2026-11-05', createdAt: '2026-11-05T12:05:00Z' }],
+    salesTotal: 120, expensesTotal: 10, net: 110
+  };
+  const dailyHtml = renderDailyReportHtml({ officeName: 'مكتب', report });
+  const rangeHtml = renderRangeReportHtml({ officeName: 'مكتب', report });
+  for (const html of [dailyHtml, rangeHtml]) {
+    assert.match(html, /طريقة الدفع/);
+    assert.match(html, /بنكي · الراجحي/);
+    assert.match(html, /نقدي/);
+  }
 });
 
 

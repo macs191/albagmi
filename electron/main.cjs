@@ -105,6 +105,11 @@ function createSiteView(tab) {
       backgroundThrottling: false
     }
   });
+  if (isWhatsAppUrl(tab.url)) {
+    const electronUserAgent = view.webContents.getUserAgent();
+    const browserCompatibleUserAgent = electronUserAgent.replace(/\sElectron\/[^\s]+/gi, '');
+    if (browserCompatibleUserAgent !== electronUserAgent) view.webContents.setUserAgent(browserCompatibleUserAgent);
+  }
   view.webContents.setAudioMuted(false);
   view.webContents.setWindowOpenHandler(({ url }) => {
     const safeUrl = safeHttpUrl(url);

@@ -2,6 +2,8 @@ import './styles.css';
 import { aggregateDailyReport, aggregateRangeReport, openPrintWindow, renderDailyReportHtml, renderRangeReportHtml } from './reports.js';
 import './public-page.css';
 import { renderPublicOfficePage, renderPublicPageLoading, renderPublicPageUnavailable } from './public-page.js';
+import { bankBalance } from './banks.js';
+import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -30,7 +32,9 @@ const initialState = {
   officeLocation: '',
   sites: defaultSites,
   transactions: [],
-  expenses: []
+  expenses: [],
+  bankAccounts: [],
+  bankOperations: []
 };
 
 let state = loadState();
@@ -50,6 +54,10 @@ let searchTerm = '';
 let categoryFilter = 'الكل';
 let selectedSalesDate = todayKey();
 let selectedReportMonth = todayKey().slice(0, 7);
+let selectedBankAccountId = null;
+let bankPeriodMode = 'daily';
+let bankPeriodDate = todayKey();
+let bankPeriodMonth = todayKey().slice(0, 7);
 let editingSiteId = null;
 let reportDialogMode = null;
 let reportDialogStart = todayKey();
@@ -126,7 +134,9 @@ function applyAccountState(accountState) {
       officeLocation: typeof saved.officeLocation === 'string' ? saved.officeLocation : '',
       sites: Array.isArray(saved.sites) ? saved.sites : structuredClone(initialState.sites),
       transactions: Array.isArray(saved.transactions) ? saved.transactions : [],
-      expenses: Array.isArray(saved.expenses) ? saved.expenses : []
+      expenses: Array.isArray(saved.expenses) ? saved.expenses : [],
+      bankAccounts: Array.isArray(saved.bankAccounts) ? saved.bankAccounts : [],
+      bankOperations: Array.isArray(saved.bankOperations) ? saved.bankOperations : []
     };
   } else {
     state = { ...structuredClone(initialState), officeName: authSession?.account?.officeName || authSession?.account?.office_name || initialState.officeName };
@@ -172,7 +182,9 @@ function loadState() {
       officeLocation: typeof saved.officeLocation === 'string' ? saved.officeLocation : '',
       sites: Array.isArray(saved.sites) ? saved.sites : structuredClone(initialState.sites),
       transactions: Array.isArray(saved.transactions) ? saved.transactions : [],
-      expenses: Array.isArray(saved.expenses) ? saved.expenses : []
+      expenses: Array.isArray(saved.expenses) ? saved.expenses : [],
+      bankAccounts: Array.isArray(saved.bankAccounts) ? saved.bankAccounts : [],
+      bankOperations: Array.isArray(saved.bankOperations) ? saved.bankOperations : []
     };
   } catch {
     return structuredClone(initialState);
@@ -198,7 +210,8 @@ function saveState(deletionPassword, immediate = false) {
 
 function getViewFromHash() {
   const value = window.location.hash.replace('#', '');
-  return ['sales', 'settings', 'notepad'].includes(value) ? value : 'home';
+  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'banks'] : [];
+  return ['sales', 'settings', ...desktopViews].includes(value) ? value : 'home';
 }
 
 function notepadStorageKey() {
@@ -263,6 +276,7 @@ function icon(name, size = 20) {
   const paths = {
     home: '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"/><path d="M9 21v-6h6v6"/>',
     notepad: '<path d="M8 3h8l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h8V3M8 13h8M8 17h8"/>',
+    bank: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/><circle cx="17" cy="15" r="1"/>',
     whatsapp: '<path d="M20.5 11.5a8.5 8.5 0 0 1-12.4 7.6L3 20l.9-4.8A8.5 8.5 0 1 1 20.5 11.5Z"/><path d="M8 8.5c.5 2.5 2 4 4.5 5l1.3-1.2 2 .9c.2 1.5-.8 2.4-2.4 2.3-3.7-.5-6.4-3.1-6.8-6.5-.1-1.3.6-2.2 1.8-2.4z"/>',
     sales: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/><path d="M15 6h3v3"/>',
     settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 1.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.1h-2.6V20a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1-1.8-1.8.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H6v-2.6h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1 1.8-1.8.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V5h2.6v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.8 1.8-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1v2.6h-.1a1.7 1.7 0 0 0-1.6 1Z"/>',
@@ -744,13 +758,13 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item" data-open-whatsapp>${icon('whatsapp')}<span>WhatsApp</span></button>` : ''}
+        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item" data-open-whatsapp>${icon('whatsapp')}<span>WhatsApp</span></button>` : ''}
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' ? renderNotepad() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' ? renderNotepad() : currentView === 'banks' && window.desktopBridge?.syncSiteTabs ? renderBanks() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
@@ -784,6 +798,43 @@ function renderNotepad() {
   return `<section class="notepad-view"><div class="view-title-row"><div><p class="eyebrow">مساحة خاصة على هذا الجهاز</p><h1>Notepad</h1><p class="page-subtitle">اكتب أو الصق بيانات مؤقتة؛ تُحفظ تلقائيًا على هذا الجهاز ولا تُرسل إلى Supabase.</p></div><button class="secondary-btn" id="clearNotepad" type="button">مسح المفكرة</button></div><label class="notepad-paper"><span class="sr-only">ملاحظات مؤقتة</span><textarea id="notepadText" spellcheck="false" placeholder="اكتب أو الصق بيانات العميل هنا…">${escapeHtml(notepadText)}</textarea></label><div class="notepad-footer"><span id="notepadSaveStatus" aria-live="polite">تم الحفظ على هذا الجهاز</span><span>لا تُمسح الملاحظات عند تسجيل الخروج؛ امسحها يدويًا عند الانتهاء.</span></div></section>`;
 }
 
+function renderBanks() {
+  return renderBankView(state, { selectedAccountId: selectedBankAccountId, periodMode: bankPeriodMode, periodDate: bankPeriodDate, periodMonth: bankPeriodMonth, formatMoney, formatDateTime });
+}
+
+function mountPaymentMethodFields() {
+  if (!window.desktopBridge?.syncSiteTabs || currentView !== 'sales') return;
+  for (const [formId, prefix] of [['transactionForm', 'transaction'], ['expenseForm', 'expense']]) {
+    const form = document.querySelector(`#${formId}`);
+    const submit = form?.querySelector('button[type="submit"]');
+    if (!form || !submit || form.querySelector(`#${prefix}PaymentMethod`)) continue;
+    submit.insertAdjacentHTML('beforebegin', renderPaymentMethodFields(prefix, state.bankAccounts));
+  }
+}
+
+function updatePaymentMethodField(prefix) {
+  const method = document.querySelector(`#${prefix}PaymentMethod`);
+  const field = document.querySelector(`#${prefix}BankAccountField`);
+  const select = field?.querySelector('select[name="bankAccountId"]');
+  if (!method || !field || !select) return;
+  const isBank = method.value === 'bank';
+  field.hidden = !isBank;
+  select.required = isBank;
+}
+
+function decoratePaymentRecords() {
+  if (!window.desktopBridge?.syncSiteTabs) return;
+  document.querySelectorAll('[data-delete-record]').forEach((button) => {
+    const [type, id] = String(button.dataset.deleteRecord || '').split(':');
+    const record = (type === 'transaction' ? state.transactions : state.expenses).find((item) => item.id === id);
+    if (!record) return;
+    const small = button.closest('.record-row')?.querySelector('.record-main small');
+    if (!small) return;
+    const bankName = state.bankAccounts.find((account) => account.id === record.bankAccountId)?.name;
+    small.textContent += ` · ${record.paymentMethod === 'bank' ? `بنكي${bankName ? `: ${bankName}` : ''}` : 'نقدي'}`;
+  });
+}
+
 function renderSiteCard(site) {
   return `<button class="site-card" data-open-site="${escapeHtml(site.id)}" aria-label="فتح ${escapeHtml(site.name)}">
     <div class="card-topline"><span class="category-label">${escapeHtml(site.category)}</span><span class="favorite-mark ${site.favorite ? 'on' : ''}" data-toggle-favorite="${escapeHtml(site.id)}" role="button" tabindex="0" aria-label="${site.favorite ? 'إزالة من المفضلة' : 'إضافة إلى المفضلة'}">${icon('star', 15)}</span></div>
@@ -810,8 +861,8 @@ function renderSales() {
 function renderReportDialog() {
   const report = aggregateRangeReport(reportDialogStart, reportDialogMode === 'daily' ? reportDialogStart : reportDialogEnd, state.transactions, state.expenses);
   const records = [
-    ...report.transactions.map((item) => ({ kind: 'sale', dateKey: item.dateKey, createdAt: item.createdAt, title: item.customer || 'عميل', detail: item.siteName || 'معاملة', amount: Number(item.amount || 0) })),
-    ...report.expenses.map((item) => ({ kind: 'expense', dateKey: item.dateKey, createdAt: item.createdAt, title: item.description || 'مصروف', detail: 'مصروف', amount: -Number(item.amount || 0) }))
+    ...report.transactions.map((item) => ({ kind: 'sale', dateKey: item.dateKey, createdAt: item.createdAt, title: item.customer || 'عميل', detail: `${item.siteName || 'معاملة'} · ${item.paymentMethod === 'bank' ? `بنكي · ${state.bankAccounts.find((account) => account.id === item.bankAccountId)?.name || 'حساب'}` : 'نقدي'}`, amount: Number(item.amount || 0) })),
+    ...report.expenses.map((item) => ({ kind: 'expense', dateKey: item.dateKey, createdAt: item.createdAt, title: item.description || 'مصروف', detail: `مصروف · ${item.paymentMethod === 'bank' ? `بنكي · ${state.bankAccounts.find((account) => account.id === item.bankAccountId)?.name || 'حساب'}` : 'نقدي'}`, amount: -Number(item.amount || 0) }))
   ].sort((a, b) => `${a.dateKey}${a.createdAt || ''}`.localeCompare(`${b.dateKey}${b.createdAt || ''}`));
   const recordRows = records.length ? records.map((item) => `<div class="report-record-row"><span class="report-record-type ${item.kind}">${item.kind === 'sale' ? 'مبيعة' : 'مصروف'}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)} · ${escapeHtml(item.dateKey)} · ${escapeHtml(item.createdAt ? formatDateTime(item.createdAt) : '')}</small></div><b class="${item.amount >= 0 ? 'amount-positive' : 'amount-negative'}">${item.amount >= 0 ? '+' : '−'} ${formatMoney(Math.abs(item.amount))}</b></div>`).join('') : '<div class="small-empty">لا توجد سجلات في الفترة المحددة.</div>';
   const dateFields = reportDialogMode === 'daily'
@@ -840,9 +891,10 @@ function closeReportDialog() {
 
 function printSelectedReport() {
   const officeName = authSession.account?.officeName || state.officeName;
+  const withPaymentNames = (records) => records.map((item) => ({ ...item, bankName: state.bankAccounts.find((account) => account.id === item.bankAccountId)?.name || '' }));
   const html = reportDialogMode === 'daily'
-    ? renderDailyReportHtml({ officeName, report: aggregateDailyReport(reportDialogStart, state.transactions, state.expenses) })
-    : renderRangeReportHtml({ officeName, report: aggregateRangeReport(reportDialogStart, reportDialogEnd, state.transactions, state.expenses) });
+    ? renderDailyReportHtml({ officeName, report: aggregateDailyReport(reportDialogStart, withPaymentNames(state.transactions), withPaymentNames(state.expenses)) })
+    : renderRangeReportHtml({ officeName, report: aggregateRangeReport(reportDialogStart, reportDialogEnd, withPaymentNames(state.transactions), withPaymentNames(state.expenses)) });
   if (!openPrintWindow(html)) return showToast('اسمح بفتح نافذة الطباعة من إعدادات المتصفح.', 'error');
   reportDialogMode = null;
   render();
@@ -877,10 +929,24 @@ function renderSettings() {
 }
 
 function bindViewEvents() {
+  mountPaymentMethodFields();
+  decoratePaymentRecords();
   mountPublicPageSettings();
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
   document.querySelector('[data-open-whatsapp]')?.addEventListener('click', () => openSiteTab(WHATSAPP_WEB));
+  for (const prefix of ['transaction', 'expense']) {
+    document.querySelector(`#${prefix}PaymentMethod`)?.addEventListener('change', () => updatePaymentMethodField(prefix));
+    updatePaymentMethodField(prefix);
+  }
+  document.querySelector('#bankPeriodMode')?.addEventListener('change', (event) => { bankPeriodMode = event.target.value; render(); });
+  document.querySelector('#bankPeriodDate')?.addEventListener('change', (event) => { bankPeriodDate = event.target.value || todayKey(); render(); });
+  document.querySelector('#bankPeriodMonth')?.addEventListener('change', (event) => { bankPeriodMonth = event.target.value || todayKey().slice(0, 7); render(); });
+  document.querySelectorAll('[data-open-bank]').forEach((button) => button.addEventListener('click', () => { selectedBankAccountId = button.dataset.openBank; render(); }));
+  document.querySelector('[data-back-banks]')?.addEventListener('click', () => { selectedBankAccountId = null; render(); });
+  document.querySelectorAll('[data-bank-image]').forEach((image) => image.addEventListener('error', () => {
+    const fallback = document.createElement('span'); fallback.className = 'bank-logo-fallback'; fallback.textContent = 'BANK'; image.replaceWith(fallback);
+  }, { once: true }));
   document.querySelector('#notepadText')?.addEventListener('input', (event) => saveNotepad(event.currentTarget.value));
   document.querySelector('#clearNotepad')?.addEventListener('click', () => {
     if (!notepadText || !window.confirm('هل تريد مسح كل محتوى المفكرة من هذا الجهاز؟')) return;
@@ -928,6 +994,11 @@ function bindViewEvents() {
   updateCustomServiceField();
   document.querySelector('#transactionForm')?.addEventListener('submit', handleTransactionSubmit);
   document.querySelector('#expenseForm')?.addEventListener('submit', handleExpenseSubmit);
+  document.querySelector('#bankCreateForm')?.addEventListener('submit', handleBankCreate);
+  document.querySelector('#bankEditForm')?.addEventListener('submit', handleBankEdit);
+  document.querySelector('#bankAdjustForm')?.addEventListener('submit', handleBankAdjust);
+  document.querySelector('#bankOperationForm')?.addEventListener('submit', handleBankOperation);
+  document.querySelector('#bankTransferForm')?.addEventListener('submit', handleBankTransfer);
   document.querySelector('#siteForm')?.addEventListener('submit', handleSiteSave);
   document.querySelector('#officeNameForm')?.addEventListener('submit', handleOfficeNameSave);
   document.querySelector('#officeLocationForm')?.addEventListener('submit', handleOfficeLocationSave);
@@ -1123,8 +1194,11 @@ function handleTransactionSubmit(event) {
   const customName = String(data.get('customServiceName') || '').trim();
   const siteName = siteId === '__custom__' ? customName : site?.name;
   if (!siteName || siteId === '__custom__' && customName.length > 120 || !amount || amount < 0) return showToast('أدخل نوع المعاملة وبياناتها بشكل صحيح.', 'error');
+  const paymentMethod = window.desktopBridge?.syncSiteTabs && data.get('paymentMethod') === 'bank' ? 'bank' : 'cash';
+  const bankAccountId = paymentMethod === 'bank' ? String(data.get('bankAccountId') || '') : null;
+  if (paymentMethod === 'bank' && !state.bankAccounts.some((account) => account.id === bankAccountId)) return showToast('اختر حسابًا بنكيًا صالحًا أو أضف حسابًا جديدًا من قسم الحسابات البنكية.', 'error');
   const createdAt = new Date().toISOString();
-  state.transactions.push({ id: uid('txn'), customer: String(data.get('customer')).trim(), siteId: site?.id || null, siteName, amount, createdAt, dateKey: todayKey() });
+  state.transactions.push({ id: uid('txn'), customer: String(data.get('customer')).trim(), siteId: site?.id || null, siteName, amount, paymentMethod, bankAccountId, createdAt, dateKey: todayKey() });
   saveState();
   showToast('تم تسجيل المعاملة');
   render();
@@ -1135,11 +1209,99 @@ function handleExpenseSubmit(event) {
   const data = new FormData(event.currentTarget);
   const amount = Number(data.get('amount'));
   if (!String(data.get('description')).trim() || !amount || amount < 0) return showToast('أدخل وصف وقيمة المصروف', 'error');
+  const paymentMethod = window.desktopBridge?.syncSiteTabs && data.get('paymentMethod') === 'bank' ? 'bank' : 'cash';
+  const bankAccountId = paymentMethod === 'bank' ? String(data.get('bankAccountId') || '') : null;
+  if (paymentMethod === 'bank' && !state.bankAccounts.some((account) => account.id === bankAccountId)) return showToast('اختر حسابًا بنكيًا صالحًا أو أضف حسابًا جديدًا من قسم الحسابات البنكية.', 'error');
   const createdAt = new Date().toISOString();
-  state.expenses.push({ id: uid('exp'), description: String(data.get('description')).trim(), amount, createdAt, dateKey: todayKey() });
+  state.expenses.push({ id: uid('exp'), description: String(data.get('description')).trim(), amount, paymentMethod, bankAccountId, createdAt, dateKey: todayKey() });
   saveState();
   showToast('تمت إضافة المصروف');
   render();
+}
+
+function bankImageInput(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return '';
+  try { const url = new URL(candidate); return url.protocol === 'https:' && !url.username && !url.password ? url.href : null; }
+  catch { return null; }
+}
+
+function addBankOperation(operation) {
+  state.bankOperations.push({ id: uid('bank-op'), createdAt: new Date().toISOString(), dateKey: todayKey(), ...operation });
+  saveState();
+  render();
+}
+
+function handleBankCreate(event) {
+  event.preventDefault();
+  if (!window.desktopBridge?.syncSiteTabs) return;
+  if (state.bankAccounts.length >= 40) return showToast('وصلت إلى الحد الأقصى للحسابات البنكية (40).', 'error');
+  const data = new FormData(event.currentTarget);
+  const name = String(data.get('name') || '').trim();
+  const openingBalance = Number(data.get('openingBalance'));
+  const imageUrl = bankImageInput(data.get('imageUrl'));
+  if (!name || name.length > 80 || !Number.isFinite(openingBalance) || openingBalance < 0 || imageUrl === null) return showToast('تحقق من اسم البنك والرصيد ورابط الصورة الآمن (HTTPS).', 'error');
+  const createdAt = new Date().toISOString();
+  const account = { id: uid('bank'), name, imageUrl, openingBalance: Math.round(openingBalance * 100) / 100, createdAt, dateKey: todayKey() };
+  state.bankAccounts.push(account);
+  selectedBankAccountId = account.id;
+  saveState();
+  showToast('تمت إضافة الحساب البنكي.');
+  render();
+}
+
+function handleBankEdit(event) {
+  event.preventDefault();
+  const account = state.bankAccounts.find((item) => item.id === selectedBankAccountId);
+  if (!account) return;
+  const data = new FormData(event.currentTarget);
+  const name = String(data.get('name') || '').trim();
+  const imageUrl = bankImageInput(data.get('imageUrl'));
+  if (!name || name.length > 80 || imageUrl === null) return showToast('تحقق من اسم الحساب ورابط الصورة الآمن (HTTPS).', 'error');
+  account.name = name;
+  account.imageUrl = imageUrl;
+  saveState();
+  showToast('تم تحديث بيانات الحساب.');
+  render();
+}
+
+function handleBankOperation(event) {
+  event.preventDefault();
+  const account = state.bankAccounts.find((item) => item.id === selectedBankAccountId);
+  if (!account) return;
+  const data = new FormData(event.currentTarget);
+  const type = String(data.get('type') || '');
+  const amount = Number(data.get('amount'));
+  const description = String(data.get('description') || '').trim();
+  if (!['deposit', 'withdrawal'].includes(type) || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000 || !description) return showToast('أدخل نوع الحركة والمبلغ والبيان بشكل صحيح.', 'error');
+  addBankOperation({ type, bankAccountId: account.id, amount: Math.round(amount * 100) / 100, description });
+  showToast(type === 'deposit' ? 'تم تسجيل الإيداع.' : 'تم تسجيل السحب.');
+}
+
+function handleBankAdjust(event) {
+  event.preventDefault();
+  const account = state.bankAccounts.find((item) => item.id === selectedBankAccountId);
+  if (!account) return;
+  const data = new FormData(event.currentTarget);
+  const targetBalance = Number(data.get('targetBalance'));
+  const description = String(data.get('description') || '').trim();
+  if (!Number.isFinite(targetBalance) || Math.abs(targetBalance) > 1_000_000_000 || !description) return showToast('أدخل الرصيد الفعلي وسبب التسوية.', 'error');
+  const delta = Math.round((targetBalance - bankBalance(account, state.bankOperations, state.transactions, state.expenses)) * 100) / 100;
+  if (!delta) return showToast('الرصيد المدخل مطابق للرصيد المسجل؛ لا توجد تسوية مطلوبة.', 'error');
+  addBankOperation({ type: 'adjustment', bankAccountId: account.id, delta, amount: Math.abs(delta), description });
+  showToast('تم تسجيل تسوية الرصيد وحفظ أثرها في الكشف.');
+}
+
+function handleBankTransfer(event) {
+  event.preventDefault();
+  const from = state.bankAccounts.find((item) => item.id === selectedBankAccountId);
+  const data = new FormData(event.currentTarget);
+  const toBankAccountId = String(data.get('toBankAccountId') || '');
+  const to = state.bankAccounts.find((item) => item.id === toBankAccountId);
+  const amount = Number(data.get('amount'));
+  if (!from || !to || from.id === to.id || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) return showToast('اختر حسابًا مستلمًا مختلفًا وأدخل مبلغًا صحيحًا.', 'error');
+  addBankOperation({ type: 'transfer', bankAccountId: from.id, toBankAccountId: to.id, amount: Math.round(amount * 100) / 100, description: String(data.get('description') || '').trim() });
+  showToast('تم تسجيل التحويل في كشف الحسابين.');
 }
 
 function deleteSite(id) {
