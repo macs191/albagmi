@@ -1,6 +1,11 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage, Menu } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage, Menu, clipboard, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileAsync = promisify(execFile);
+const { exportScannerImage } = require('./scanner-formats.cjs');
 
 let mainWindow;
 const siteViews = new Map();
@@ -59,6 +64,129 @@ function saveRememberedLogin(credentials) {
 
 function clearRememberedLogin() {
   try { fs.unlinkSync(rememberedLoginPath()); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return true;
+}
+
+function scannerDirectory() {
+  return path.join(app.getPath('userData'), 'scans');
+}
+
+function scannerImagePath(id) {
+  if (typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    throw new Error('معرّف ملف المسح غير صالح.');
+  }
+  return path.join(scannerDirectory(), `${id}.jpg`);
+}
+
+async function acquireScannerImage() {
+  if (process.platform !== 'win32') throw new Error('المسح المباشر متاح في برنامج Windows فقط.');
+  const id = crypto.randomUUID();
+  const temporaryPath = path.join(app.getPath('temp'), `servicehub-scan-${id}.jpg`);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$dialog = New-Object -ComObject WIA.CommonDialog",
+    "$image = $dialog.ShowAcquireImage(1, 0, 0, '{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}', $false, $true, $false)",
+    'if ($null -eq $image) { Write-Output "SCAN_CANCELLED"; exit 0 }',
+    '$image.SaveFile($env:SERVICEHUB_SCAN_TEMP)',
+    'Write-Output "SCAN_COMPLETE"'
+  ].join('\n');
+  try {
+    await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: false,
+      timeout: 10 * 60 * 1000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, SERVICEHUB_SCAN_TEMP: temporaryPath }
+    });
+    if (!fs.existsSync(temporaryPath)) return { cancelled: true };
+    const stats = fs.statSync(temporaryPath);
+    if (!stats.isFile() || stats.size < 100 || stats.size > 35 * 1024 * 1024) throw new Error('حجم صورة المسح غير صالح أو يتجاوز 35 ميجابايت.');
+    fs.mkdirSync(scannerDirectory(), { recursive: true });
+    fs.copyFileSync(temporaryPath, scannerImagePath(id), fs.constants.COPYFILE_EXCL);
+    return {
+      id,
+      filename: `مستند ممسوح ${new Date().toLocaleString('ar-SA').replace(/[/:]/g, '-')}.jpg`,
+      createdAt: new Date().toISOString(),
+      size: stats.size
+    };
+  } catch (error) {
+    const details = String(error?.stderr || error?.message || '');
+    if (/WIA|scanner|ماسح|device|جهاز/i.test(details)) throw new Error('لم يتم العثور على ماسح متوافق مع Windows WIA. تحقق من توصيل الماسح وتثبيت تعريفه.');
+    throw new Error('تعذر المسح. تأكد من أن الماسح متصل ويعمل ثم حاول مرة أخرى.');
+  } finally {
+    try { fs.unlinkSync(temporaryPath); } catch { /* temporary image may already have been moved */ }
+  }
+}
+
+function readScannerImage(id) {
+  const file = scannerImagePath(id);
+  const stats = fs.statSync(file);
+  if (!stats.isFile() || stats.size > 35 * 1024 * 1024) throw new Error('تعذر قراءة ملف المسح أو تجاوز حجمه الحد المسموح.');
+  return `data:image/jpeg;base64,${fs.readFileSync(file).toString('base64')}`;
+}
+
+function deleteScannerImage(id) {
+  const file = scannerImagePath(id);
+  try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return true;
+}
+
+async function exportScannerDocument(request) {
+  const inputPath = scannerImagePath(request?.id);
+  const formats = {
+    jpeg: { extension: 'jpg', label: 'صورة JPEG' },
+    png: { extension: 'png', label: 'صورة PNG' },
+    bmp: { extension: 'bmp', label: 'صورة BMP' },
+    tiff: { extension: 'tiff', label: 'صورة TIFF' },
+    webp: { extension: 'webp', label: 'صورة WebP' },
+    pdf: { extension: 'pdf', label: 'ملف PDF' }
+  };
+  const selected = formats[request?.format];
+  if (!selected) throw new Error('صيغة الحفظ غير مدعومة.');
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'حفظ المستند الممسوح',
+    defaultPath: path.join(app.getPath('documents'), `مستند ممسوح.${selected.extension}`),
+    filters: [{ name: selected.label, extensions: [selected.extension] }]
+  });
+  if (result.canceled || !result.filePath) return { cancelled: true };
+  let outputPath = result.filePath;
+  if (path.extname(outputPath).toLowerCase() !== `.${selected.extension}`) outputPath += `.${selected.extension}`;
+  try {
+    await exportScannerImage(inputPath, outputPath, request.format);
+    return { cancelled: false, filename: path.basename(outputPath), format: request.format };
+  } catch {
+    try { fs.unlinkSync(outputPath); } catch { /* no output to remove */ }
+    throw new Error(`تعذر حفظ الملف بصيغة ${selected.label}.`);
+  }
+}
+
+async function printScannerDocument(id) {
+  const image = fs.readFileSync(scannerImagePath(id)).toString('base64');
+  const printWindow = new BrowserWindow({
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    width: 900,
+    height: 900,
+    show: true,
+    title: 'معاينة وطباعة المستند',
+    autoHideMenuBar: true,
+    webPreferences: { contextIsolation: true, sandbox: true }
+  });
+  const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>معاينة الطباعة</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;background:#eef2f1}img{display:block;max-width:100%;max-height:calc(100vh - 40px);object-fit:contain;box-shadow:0 12px 40px #183c3c22}@page{size:A4;margin:10mm}@media print{body{display:block;min-height:0;padding:0;background:white}img{width:100%;height:100%;max-height:277mm;object-fit:contain;box-shadow:none}}</style><img src="data:image/jpeg;base64,${image}" alt="المستند الممسوح"></html>`;
+  try {
+    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    printWindow.webContents.print({ silent: false, printBackground: true, pageSize: 'A4' }, () => {
+      setTimeout(() => { if (!printWindow.isDestroyed()) printWindow.close(); }, 400);
+    });
+    return true;
+  } catch {
+    if (!printWindow.isDestroyed()) printWindow.close();
+    throw new Error('تعذر فتح نافذة طباعة المستند.');
+  }
+}
+
+function copyText(value) {
+  const text = String(value || '');
+  if (!text || text.length > 200000) return false;
+  clipboard.writeText(text);
   return true;
 }
 
@@ -191,6 +319,12 @@ app.whenReady().then(() => {
   ipcMain.handle('get-remembered-login', () => readRememberedLogin());
   ipcMain.handle('save-remembered-login', (_event, credentials) => saveRememberedLogin(credentials));
   ipcMain.handle('clear-remembered-login', () => clearRememberedLogin());
+  ipcMain.handle('scanner:acquire', () => acquireScannerImage());
+  ipcMain.handle('scanner:read-image', (_event, id) => readScannerImage(id));
+  ipcMain.handle('scanner:delete-image', (_event, id) => deleteScannerImage(id));
+  ipcMain.handle('scanner:copy-text', (_event, text) => copyText(text));
+  ipcMain.handle('scanner:export', (_event, request) => exportScannerDocument(request));
+  ipcMain.handle('scanner:print', (_event, id) => printScannerDocument(id));
   ipcMain.handle('print-active-site', () => {
     const active = [...siteViews.values()].find(({ view }) => view.getVisible());
     if (!active) return false;

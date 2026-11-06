@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.11
+      - v0.1.12
 
 permissions:
   contents: write
@@ -39,6 +39,6 @@ jobs:
 
       - name: Publish installer on GitHub Release
         shell: pwsh
-        run: gh release create $env:GITHUB_REF_NAME release/ServiceHub-Desktop-0.1.11-Setup.exe --title "Service Hub Desktop 0.1.11" --notes "إضافة المديونيات المحلية والفواتير القابلة للطباعة A4 وكتابة المبلغ بالعربية، وإزالة قسم WhatsApp من تطبيق Windows." --latest --repo $env:GITHUB_REPOSITORY
+        run: gh release create $env:GITHUB_REF_NAME release/ServiceHub-Desktop-0.1.12-Setup.exe --title "Service Hub Desktop 0.1.12" --notes "إضافة الماسح الضوئي مع التعرف الضوئي العربي/الإنجليزي محليًا، حفظ المستند بصيغ PDF وJPEG وPNG وBMP وTIFF وWebP وطباعته، إضافة إلى المديونيات والفواتير المحلية." --latest --repo $env:GITHUB_REPOSITORY
         env:
           GH_TOKEN: ${{ github.token }}

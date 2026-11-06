@@ -1,6 +1,6 @@
 {
   "name": "servicehub-desktop",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "packageManager": "pnpm@10.12.4",
   "type": "module",
@@ -47,5 +47,10 @@
       "createStartMenuShortcut": true,
       "shortcutName": "Service Hub Desktop"
     }
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "sharp": "^0.35.5",
+    "tesseract.js": "^7.0.0"
   }
 }

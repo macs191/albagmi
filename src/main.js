@@ -8,6 +8,7 @@ import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
 const NOTEPAD_STORAGE_KEY = 'servicehub-notepad-v1';
+const SCANNER_STORAGE_KEY = 'servicehub-scanner-v1';
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const todayKey = () => {
   const d = new Date();
@@ -40,6 +41,7 @@ let state = loadState();
 let authSession = loadSession();
 let debtRecords = loadDesktopCollection('debts');
 let invoices = loadDesktopCollection('invoices');
+let scannerDocuments = loadDesktopCollection('scans');
 const publicPageSlug = window.location.pathname.match(/^\/m\/([a-z0-9._-]{3,40})\/?$/i)?.[1]?.toLowerCase() || '';
 let publicOfficeProfile = null;
 let publicPageLoading = Boolean(publicPageSlug);
@@ -49,6 +51,10 @@ let currentView = getViewFromHash();
 let openSiteTabs = [];
 let activeSiteTabId = null;
 let notepadText = loadNotepad();
+let selectedScannerDocumentId = scannerDocuments[0]?.id || null;
+let scannerPreviewUrl = '';
+let scannerBusy = false;
+let scannerOcrStatus = '';
 let clientPasswordRequest = null;
 let adminPasswordRequests = [];
 let searchTerm = '';
@@ -122,6 +128,9 @@ function saveSession(session) {
   else sessionStorage.removeItem(SESSION_KEY);
   debtRecords = session?.role === 'client' ? loadDesktopCollection('debts') : [];
   invoices = session?.role === 'client' ? loadDesktopCollection('invoices') : [];
+  scannerDocuments = session?.role === 'client' ? loadDesktopCollection('scans') : [];
+  selectedScannerDocumentId = scannerDocuments[0]?.id || null;
+  scannerPreviewUrl = '';
 }
 
 function desktopCollectionKey(name) {
@@ -231,7 +240,7 @@ function saveState(deletionPassword, immediate = false) {
 
 function getViewFromHash() {
   const value = window.location.hash.replace('#', '');
-  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'banks', 'debts', 'invoices'] : [];
+  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'scanner', 'banks', 'debts', 'invoices'] : [];
   return ['sales', 'settings', ...desktopViews].includes(value) ? value : 'home';
 }
 
@@ -249,6 +258,119 @@ function saveNotepad(value) {
   localStorage.setItem(notepadStorageKey(), notepadText);
   const status = document.querySelector('#notepadSaveStatus');
   if (status) status.textContent = 'تم الحفظ على هذا الجهاز';
+}
+
+function saveScannerDocuments() {
+  saveDesktopCollection('scans', scannerDocuments);
+}
+
+async function startScannerAcquisition() {
+  if (scannerBusy) return;
+  if (!window.desktopBridge?.acquireScannerImage) return showToast('ميزة الماسح متاحة في تطبيق Windows فقط.', 'error');
+  if (scannerDocuments.length >= 100) return showToast('وصل سجل الماسح إلى 100 مستند. احذف مستندات قديمة أولًا.', 'error');
+  scannerBusy = true;
+  scannerOcrStatus = 'يتم الاتصال بالماسح…';
+  render();
+  try {
+    const result = await window.desktopBridge.acquireScannerImage();
+    if (!result || result.cancelled) {
+      scannerBusy = false;
+      scannerOcrStatus = '';
+      render();
+      return;
+    }
+    const document = { id: result.id, filename: result.filename, createdAt: result.createdAt, size: result.size, text: '' };
+    scannerDocuments.unshift(document);
+    selectedScannerDocumentId = document.id;
+    scannerPreviewUrl = '';
+    saveScannerDocuments();
+    scannerBusy = false;
+    scannerOcrStatus = 'جارٍ تحميل صورة المستند…';
+    render();
+    await openScannerDocument(document.id);
+  } catch (error) {
+    scannerBusy = false;
+    scannerOcrStatus = '';
+    render();
+    showToast(error.message || 'تعذر الاتصال بالماسح. تحقق من تعريف Windows WIA.', 'error');
+  }
+}
+
+async function openScannerDocument(id) {
+  selectedScannerDocumentId = id;
+  scannerPreviewUrl = '';
+  scannerOcrStatus = 'جارٍ تحميل صورة المستند…';
+  render();
+  try {
+    const imageUrl = await window.desktopBridge.readScannerImage(id);
+    if (selectedScannerDocumentId !== id) return;
+    scannerPreviewUrl = imageUrl;
+    const document = scannerDocuments.find((item) => item.id === id);
+    if (document && !document.text) await extractScannerText(id, imageUrl);
+    else { scannerOcrStatus = 'يمكنك مراجعة النص وتصحيحه قبل نسخه.'; render(); }
+  } catch {
+    scannerOcrStatus = 'تعذر فتح صورة هذا المستند. قد يكون الملف حُذف من الكمبيوتر.';
+    render();
+  }
+}
+
+async function extractScannerText(id, imageUrl) {
+  scannerBusy = true;
+  scannerOcrStatus = 'تحميل محرك التعرف الضوئي…';
+  render();
+  let worker;
+  try {
+    const { createWorker } = await import('tesseract.js');
+    worker = await createWorker('ara+eng', 1, {
+      logger: (message) => {
+        if (selectedScannerDocumentId !== id) return;
+        const progress = Number.isFinite(message.progress) ? ` · ${Math.round(message.progress * 100)}٪` : '';
+        const statusLabels = { 'loading tesseract core': 'تحميل محرك التعرف الضوئي', 'initializing tesseract': 'تهيئة محرك القراءة', 'loading language traineddata': 'تحميل نموذج العربية والإنجليزية', 'initializing api': 'تهيئة اللغات', 'recognizing text': 'قراءة محتوى المستند' };
+        scannerOcrStatus = `${statusLabels[message.status] || 'معالجة المستند'}${progress}`;
+        const status = document.querySelector('#scannerOcrStatus');
+        if (status) status.textContent = scannerOcrStatus;
+      }
+    });
+    const result = await worker.recognize(imageUrl);
+    const documentRecord = scannerDocuments.find((item) => item.id === id);
+    if (documentRecord) {
+      documentRecord.text = String(result.data?.text || '').trim().slice(0, 100000);
+      saveScannerDocuments();
+      scannerOcrStatus = documentRecord.text ? 'اكتمل استخراج النص. راجعه وصححه قبل النسخ.' : 'لم يظهر نص واضح؛ يمكنك كتابة النص يدويًا أو إعادة المسح.';
+    }
+  } catch (error) {
+    scannerOcrStatus = 'تعذر استخراج النص تلقائيًا. تحقق من اتصال الإنترنت لتنزيل نموذج اللغة، أو اكتب النص يدويًا.';
+    showToast('تعذر تشغيل التعرف الضوئي. صورة المستند محفوظة ويمكنك إدخال النص يدويًا.', 'error');
+  } finally {
+    if (worker) await worker.terminate().catch(() => {});
+    scannerBusy = false;
+    render();
+  }
+}
+
+async function copyScannerText() {
+  const document = scannerDocuments.find((item) => item.id === selectedScannerDocumentId);
+  if (!document?.text) return showToast('لا يوجد نص لنسخه.', 'error');
+  try {
+    if (window.desktopBridge?.copyText) await window.desktopBridge.copyText(document.text);
+    else await navigator.clipboard.writeText(document.text);
+    showToast('تم نسخ النص المستخرج.');
+  } catch { showToast('تعذر نسخ النص إلى الحافظة.', 'error'); }
+}
+
+async function deleteScannerDocument(id) {
+  const item = scannerDocuments.find((document) => document.id === id);
+  if (!item || !window.confirm(`سيُحذف المستند وصورته نهائيًا من هذا الكمبيوتر. هل تريد متابعة حذف «${item.filename}»؟`)) return;
+  try { await window.desktopBridge?.deleteScannerImage?.(id); } catch { return showToast('تعذر حذف صورة المستند من الكمبيوتر.', 'error'); }
+  scannerDocuments = scannerDocuments.filter((document) => document.id !== id);
+  if (selectedScannerDocumentId === id) {
+    selectedScannerDocumentId = scannerDocuments[0]?.id || null;
+    scannerPreviewUrl = '';
+  }
+  scannerOcrStatus = '';
+  saveScannerDocuments();
+  render();
+  if (selectedScannerDocumentId) await openScannerDocument(selectedScannerDocumentId);
 }
 
 function isAdminRoute() {
@@ -297,6 +419,9 @@ function icon(name, size = 20) {
   const paths = {
     home: '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"/><path d="M9 21v-6h6v6"/>',
     notepad: '<path d="M8 3h8l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h8V3M8 13h8M8 17h8"/>',
+    scanner: '<path d="M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3"/><path d="M7 9h10v7H7zM9 12h6M9 14h4"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
+    refresh: '<path d="M20 7v5h-5"/><path d="M4.9 9A7.5 7.5 0 0 1 18 6.4L20 12M4 17v-5h5"/><path d="M19.1 15A7.5 7.5 0 0 1 6 17.6L4 12"/>',
     bank: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/><circle cx="17" cy="15" r="1"/>',
     sales: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/><path d="M15 6h3v3"/>',
     settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 1.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.1h-2.6V20a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1-1.8-1.8.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H6v-2.6h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1 1.8-1.8.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V5h2.6v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.8 1.8-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1v2.6h-.1a1.7 1.7 0 0 0-1.6 1Z"/>',
@@ -778,13 +903,13 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button>` : ''}
+        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button>` : ''}
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'banks' && window.desktopBridge?.syncSiteTabs ? renderBanks() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'banks' && window.desktopBridge?.syncSiteTabs ? renderBanks() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
@@ -816,6 +941,15 @@ function renderHome() {
 
 function renderNotepad() {
   return `<section class="notepad-view"><div class="view-title-row"><div><p class="eyebrow">مساحة خاصة على هذا الجهاز</p><h1>Notepad</h1><p class="page-subtitle">اكتب أو الصق بيانات مؤقتة؛ تُحفظ تلقائيًا على هذا الجهاز ولا تُرسل إلى Supabase.</p></div><button class="secondary-btn" id="clearNotepad" type="button">مسح المفكرة</button></div><label class="notepad-paper"><span class="sr-only">ملاحظات مؤقتة</span><textarea id="notepadText" spellcheck="false" placeholder="اكتب أو الصق بيانات العميل هنا…">${escapeHtml(notepadText)}</textarea></label><div class="notepad-footer"><span id="notepadSaveStatus" aria-live="polite">تم الحفظ على هذا الجهاز</span><span>لا تُمسح الملاحظات عند تسجيل الخروج؛ امسحها يدويًا عند الانتهاء.</span></div></section>`;
+}
+
+function renderScanner() {
+  const selected = scannerDocuments.find((item) => item.id === selectedScannerDocumentId) || null;
+  const scanList = scannerDocuments.map((item) => `<button class="scanner-history-item ${item.id === selected?.id ? 'active' : ''}" type="button" data-select-scan="${escapeHtml(item.id)}"><span class="scanner-history-icon">${icon('image', 18)}</span><span class="scanner-history-copy"><strong>${escapeHtml(item.filename || 'مستند ممسوح')}</strong><small>${escapeHtml(formatDateTime(item.createdAt))}</small></span><span class="scanner-history-arrow">‹</span></button>`).join('');
+  const preview = selected && scannerPreviewUrl ? `<img class="scanner-document-image" src="${escapeHtml(scannerPreviewUrl)}" alt="معاينة ${escapeHtml(selected.filename)}">` : `<div class="scanner-preview-placeholder">${icon('scanner', 34)}<strong>${selected ? 'جارٍ تحميل المعاينة…' : 'ستظهر معاينة المستند هنا'}</strong><small>ضع المستند على الماسح ثم اختر «مسح مستند»</small></div>`;
+  const detail = selected ? `<section class="scanner-workspace"><div class="scanner-preview-card"><div class="scanner-preview-toolbar"><div><strong>معاينة المستند</strong><small>${escapeHtml(selected.filename || '')}</small></div><button class="icon-btn danger" type="button" data-delete-scan="${escapeHtml(selected.id)}" aria-label="حذف المستند" title="حذف المستند">${icon('trash', 17)}</button></div><div class="scanner-preview-canvas">${preview}</div></div><div class="scanner-text-card"><header class="scanner-text-heading"><div><p class="eyebrow">التعرف الضوئي على الحروف</p><h2>النص المستخرج</h2></div><button class="secondary-btn scanner-copy-btn" type="button" data-copy-scan-text ${selected.text && !scannerBusy ? '' : 'disabled'}>${icon('copy', 16)} نسخ النص</button></header><p id="scannerOcrStatus" class="scanner-ocr-status" aria-live="polite">${escapeHtml(scannerOcrStatus || (selected.text ? 'يمكنك مراجعة النص وتصحيحه قبل نسخه.' : 'جارٍ تجهيز النص…'))}</p><textarea id="scannerExtractedText" class="scanner-extracted-text" dir="auto" spellcheck="false" maxlength="100000" ${scannerBusy ? 'disabled' : ''} placeholder="سيظهر هنا النص الذي تم التعرف عليه، ويمكنك تعديله يدويًا…">${escapeHtml(selected.text || '')}</textarea><footer class="scanner-text-footer"><span id="scannerSaveStatus" aria-live="polite">محفوظ على هذا الجهاز فقط</span><button class="ghost-btn" type="button" data-rerun-ocr ${scannerBusy ? 'disabled' : ''}>${icon('refresh', 15)} إعادة استخراج النص</button></footer></div></section>` : `<section class="scanner-empty-panel"><div class="scanner-empty-icon">${icon('scanner', 38)}</div><h2>لا توجد مستندات ممسوحة</h2><p>ابدأ مسح بطاقة الهوية أو أي مستند. ستظهر صورته هنا، ويمكنك حفظها أو طباعتها بصيغ متعددة.</p></section>`;
+  const formats = [['pdf', 'PDF'], ['jpeg', 'JPG / JPEG'], ['png', 'PNG'], ['bmp', 'BMP'], ['tiff', 'TIFF'], ['webp', 'WebP']];
+  return `<section class="scanner-view"><header class="view-title-row scanner-title-row"><div><p class="eyebrow">محفوظ محليًا — لا يتم رفع الصور</p><h1>الماسح الضوئي</h1><p class="page-subtitle">امسح مستندًا، راجع النص، ثم احفظه بصيغ الصور الشائعة أو PDF أو اطبعه.</p></div><div class="scanner-actions"><label class="scanner-format-picker"><span>صيغة الحفظ</span><select id="scannerExportFormat">${formats.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button class="secondary-btn" type="button" data-save-scan ${selected ? '' : 'disabled'}>${icon('download', 16)} حفظ باسم</button><button class="secondary-btn" type="button" data-print-scan ${selected ? '' : 'disabled'}>${icon('receipt', 16)} طباعة</button><button class="primary-btn" type="button" data-start-scan ${scannerBusy ? 'disabled' : ''}>${icon('scanner', 18)} ${scannerBusy ? 'جارٍ المعالجة…' : 'مسح مستند'}</button></div></header><div class="scanner-privacy-note"><span>${icon('lock', 16)}</span><p>تُحفظ الصور والنصوص على هذا الكمبيوتر فقط. قد يحتاج تنزيل نموذج اللغة أول مرة إلى الإنترنت؛ لا تُرفع صورة الهوية أو المستند.</p></div><div class="scanner-layout"><aside class="scanner-history-panel"><div class="scanner-history-heading"><div><p class="eyebrow">سجل محلي</p><h2>المستندات</h2></div><span class="record-count">${scannerDocuments.length}</span></div>${scanList || '<div class="scanner-history-empty">لا يوجد سجل بعد</div>'}</aside>${detail}</div></section>`;
 }
 
 function renderBanks() {
@@ -1096,6 +1230,43 @@ function bindViewEvents() {
     const fallback = document.createElement('span'); fallback.className = 'bank-logo-fallback'; fallback.textContent = 'BANK'; image.replaceWith(fallback);
   }, { once: true }));
   document.querySelector('#notepadText')?.addEventListener('input', (event) => saveNotepad(event.currentTarget.value));
+  document.querySelectorAll('[data-start-scan]').forEach((button) => button.addEventListener('click', startScannerAcquisition));
+  document.querySelector('[data-save-scan]')?.addEventListener('click', async () => {
+    if (!selectedScannerDocumentId) return;
+    const format = document.querySelector('#scannerExportFormat')?.value || 'pdf';
+    try {
+      const result = await window.desktopBridge.exportScannerDocument({ id: selectedScannerDocumentId, format });
+      if (!result?.cancelled) showToast(`تم حفظ ${result.filename} في المكان الذي اخترته.`);
+    } catch (error) { showToast(error.message || 'تعذر حفظ المستند.', 'error'); }
+  });
+  document.querySelector('[data-print-scan]')?.addEventListener('click', async () => {
+    if (!selectedScannerDocumentId) return;
+    try { await window.desktopBridge.printScannerDocument(selectedScannerDocumentId); }
+    catch (error) { showToast(error.message || 'تعذر فتح الطباعة.', 'error'); }
+  });
+  document.querySelectorAll('[data-select-scan]').forEach((button) => button.addEventListener('click', () => {
+    if (button.dataset.selectScan !== selectedScannerDocumentId) openScannerDocument(button.dataset.selectScan);
+  }));
+  document.querySelector('#scannerExtractedText')?.addEventListener('input', (event) => {
+    const record = scannerDocuments.find((item) => item.id === selectedScannerDocumentId);
+    if (!record) return;
+    record.text = event.currentTarget.value.slice(0, 100000);
+    saveScannerDocuments();
+    const status = document.querySelector('#scannerSaveStatus');
+    if (status) status.textContent = 'تم الحفظ محليًا';
+    const copyButton = document.querySelector('[data-copy-scan-text]');
+    if (copyButton) copyButton.disabled = !record.text;
+  });
+  document.querySelector('[data-copy-scan-text]')?.addEventListener('click', copyScannerText);
+  document.querySelectorAll('[data-delete-scan]').forEach((button) => button.addEventListener('click', () => deleteScannerDocument(button.dataset.deleteScan)));
+  document.querySelector('[data-rerun-ocr]')?.addEventListener('click', async () => {
+    const record = scannerDocuments.find((item) => item.id === selectedScannerDocumentId);
+    if (!record || !scannerPreviewUrl || scannerBusy) return;
+    if (record.text && !window.confirm('سيتم استبدال النص الحالي بالنص المستخرج من جديد. هل تريد المتابعة؟')) return;
+    record.text = '';
+    saveScannerDocuments();
+    await extractScannerText(record.id, scannerPreviewUrl);
+  });
   document.querySelector('#debtForm')?.addEventListener('submit', handleDebtSubmit);
   document.querySelectorAll('[data-delete-debt]').forEach((button) => button.addEventListener('click', () => {
     const record = debtRecords.find((item) => item.id === button.dataset.deleteDebt);

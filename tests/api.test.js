@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { pbkdf2Sync } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+import sharp from 'sharp';
 import handler from '../api/[...path].js';
 import adminLoginRoute from '../api/admin/login.js';
 import adminAccountsRoute from '../api/admin/accounts.js';
@@ -17,6 +21,10 @@ import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, ren
 import { buildOfficeWhatsappUrl, normalizeWhatsappNumber, publicServiceCount, renderPublicOfficePage } from '../src/public-page.js';
 import { bankBalance, bankLedger, bankMovementTotals, filterBankLedger } from '../src/banks.js';
 import { renderPaymentMethodFields } from '../src/bank-view.js';
+
+const require = createRequire(import.meta.url);
+const { exportScannerImage } = require('../electron/scanner-formats.cjs');
+const { PDFDocument } = require('pdf-lib');
 
 const ENV_KEYS = [
   'SUPABASE_URL',
@@ -663,9 +671,13 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.11');
+  assert.equal(packageJson.version, '0.1.12');
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
+  assert.match(appSource, /data-nav="scanner"/);
+  assert.match(appSource, /data-save-scan/);
+  assert.match(appSource, /data-print-scan/);
+  assert.match(appSource, /createWorker\('ara\+eng'/);
   assert.match(appSource, /data-nav="debts"/);
   assert.match(appSource, /data-nav="invoices"/);
   assert.doesNotMatch(appSource, /data-open-whatsapp|WHATSAPP_WEB|web\.whatsapp\.com/);
@@ -686,6 +698,12 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(appSource, /addEventListener\('resize', scheduleDesktopSiteSync/);
   assert.match(appSource, /Math\.max\(rect\.width, window\.innerWidth - rect\.left\)/);
   assert.match(electronMain, /persist:servicehub-sites/);
+  assert.match(electronMain, /WIA\.CommonDialog/);
+  assert.match(electronMain, /scannerImagePath/);
+  assert.match(electronMain, /exportScannerImage/);
+  assert.match(electronMain, /pageSize: 'A4'/);
+  assert.match(preload, /exportScannerDocument/);
+  assert.match(preload, /printScannerDocument/);
   assert.match(electronMain, /backgroundThrottling: false/);
   assert.match(electronMain, /setAudioMuted\(false\)/);
   assert.doesNotMatch(electronMain, /WhatsApp|whatsapp|isWhatsAppUrl|setPermissionRequestHandler/);
@@ -696,6 +714,36 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(appSource, /تعذر الدخول تلقائيًا بالبيانات المحفوظة/);
   assert.match(electronMain, /did-fail-load/);
   assert.match(electronMain, /تعذر الاتصال بموقع الخدمة/);
+});
+
+test('scanner export creates valid JPEG, PNG, BMP, TIFF, WebP and single-page PDF files', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'servicehub-scanner-test-'));
+  try {
+    const input = join(directory, 'source.jpg');
+    const rawPixels = Buffer.from([240, 35, 35, 35, 220, 90, 30, 80, 230, 255, 255, 255, 20, 20, 20, 90, 180, 130]);
+    await sharp(rawPixels, { raw: { width: 3, height: 2, channels: 3 } }).jpeg({ quality: 90 }).toFile(input);
+    const signatures = { jpeg: [0xff, 0xd8], png: [0x89, 0x50, 0x4e, 0x47], bmp: [0x42, 0x4d], webp: [0x52, 0x49, 0x46, 0x46] };
+    for (const format of ['jpeg', 'png', 'bmp', 'tiff', 'webp']) {
+      const output = join(directory, `scan.${format}`);
+      await exportScannerImage(input, output, format);
+      const bytes = await readFile(output);
+      assert.ok(bytes.length > 54, `${format} output should not be empty`);
+      if (signatures[format]) assert.deepEqual([...bytes.subarray(0, signatures[format].length)], signatures[format], `${format} signature`);
+      if (format === 'tiff') assert.ok(bytes.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00])) || bytes.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a])));
+      if (format !== 'bmp') {
+        const metadata = await sharp(output).metadata();
+        assert.equal(metadata.width, 3);
+        assert.equal(metadata.height, 2);
+      }
+    }
+    const pdfPath = join(directory, 'scan.pdf');
+    await exportScannerImage(input, pdfPath, 'pdf');
+    const pdf = await PDFDocument.load(await readFile(pdfPath));
+    assert.equal(pdf.getPageCount(), 1);
+    assert.ok((await readFile(pdfPath)).subarray(0, 5).equals(Buffer.from('%PDF-')));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('sales and service UI hides redundant chrome and requires the deletion dialog and manual item path', async () => {
