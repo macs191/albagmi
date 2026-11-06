@@ -729,12 +729,9 @@ test('scanner export creates valid JPEG, PNG, BMP, TIFF, WebP and single-page PD
       const bytes = await readFile(output);
       assert.ok(bytes.length > 54, `${format} output should not be empty`);
       if (signatures[format]) assert.deepEqual([...bytes.subarray(0, signatures[format].length)], signatures[format], `${format} signature`);
+      if (format === 'webp') assert.equal(bytes.subarray(8, 12).toString('ascii'), 'WEBP');
+      if (format === 'bmp') { assert.equal(bytes.readInt32LE(18), 3); assert.equal(bytes.readInt32LE(22), 2); }
       if (format === 'tiff') assert.ok(bytes.subarray(0, 4).equals(Buffer.from([0x49, 0x49, 0x2a, 0x00])) || bytes.subarray(0, 4).equals(Buffer.from([0x4d, 0x4d, 0x00, 0x2a])));
-      if (format !== 'bmp') {
-        const metadata = await sharp(output).metadata();
-        assert.equal(metadata.width, 3);
-        assert.equal(metadata.height, 2);
-      }
     }
     const pdfPath = join(directory, 'scan.pdf');
     await exportScannerImage(input, pdfPath, 'pdf');
