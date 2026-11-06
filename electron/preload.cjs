@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   clearRememberedLogin: () => ipcRenderer.invoke('clear-remembered-login'),
   acquireScannerImage: () => ipcRenderer.invoke('scanner:acquire'),
   readScannerImage: (id) => ipcRenderer.invoke('scanner:read-image', id),
+  readScannerOcrImage: (id) => ipcRenderer.invoke('scanner:ocr-image', id),
   deleteScannerImage: (id) => ipcRenderer.invoke('scanner:delete-image', id),
   copyText: (text) => ipcRenderer.invoke('scanner:copy-text', text),
   exportScannerDocument: (request) => ipcRenderer.invoke('scanner:export', request),

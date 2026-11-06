@@ -4,6 +4,7 @@ import './public-page.css';
 import { renderPublicOfficePage, renderPublicPageLoading, renderPublicPageUnavailable } from './public-page.js';
 import { bankBalance } from './banks.js';
 import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
+import { normalizeOcrText } from './scanner-text.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -331,10 +332,14 @@ async function extractScannerText(id, imageUrl) {
         if (status) status.textContent = scannerOcrStatus;
       }
     });
-    const result = await worker.recognize(imageUrl);
+    await worker.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
+    const ocrImage = window.desktopBridge?.readScannerOcrImage
+      ? await window.desktopBridge.readScannerOcrImage(id)
+      : imageUrl;
+    const result = await worker.recognize(ocrImage);
     const documentRecord = scannerDocuments.find((item) => item.id === id);
     if (documentRecord) {
-      documentRecord.text = String(result.data?.text || '').trim().slice(0, 100000);
+      documentRecord.text = normalizeOcrText(result.data?.text).slice(0, 100000);
       saveScannerDocuments();
       scannerOcrStatus = documentRecord.text ? 'اكتمل استخراج النص. راجعه وصححه قبل النسخ.' : 'لم يظهر نص واضح؛ يمكنك كتابة النص يدويًا أو إعادة المسح.';
     }
@@ -596,6 +601,18 @@ function openSiteTab(site) {
   activeSiteTabId = tab.id;
   currentView = 'home';
   render();
+}
+
+function openGoogleSearch(query) {
+  const value = String(query || '').trim().slice(0, 200);
+  if (!value) return showToast('اكتب عبارة البحث أولًا.', 'error');
+  const url = `https://www.google.com/search?q=${encodeURIComponent(value)}`;
+  const title = `Google: ${value}`.slice(0, 70);
+  if (!window.desktopBridge?.syncSiteTabs) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  openSiteTab({ id: uid('google-search'), name: title, url, image: 'https://www.google.com/s2/favicons?domain=google.com&sz=128' });
 }
 
 function closeSiteTab(id) {
@@ -933,7 +950,7 @@ function renderHome() {
   });
   const categories = ['الكل', 'المفضلة', ...new Set(state.sites.map((site) => site.category))];
   return `<section class="home-view">
-    <div class="toolbar"><label class="search-box">${icon('search', 18)}<input id="siteSearch" value="${escapeHtml(searchTerm)}" placeholder="ابحث عن موقع أو خدمة" aria-label="ابحث عن موقع أو خدمة"></label><div class="category-chips">${categories.map((category) => `<button class="chip ${categoryFilter === category ? 'selected' : ''}" data-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div></div>
+    <div class="toolbar"><div class="home-search-group"><label class="search-box">${icon('search', 18)}<input id="siteSearch" value="${escapeHtml(searchTerm)}" placeholder="ابحث عن موقع أو خدمة" aria-label="ابحث عن موقع أو خدمة؛ اضغط Enter للبحث في Google"></label><button class="secondary-btn google-search-btn" type="button" id="googleSearchButton">${icon('search', 16)} بحث Google</button></div><div class="category-chips">${categories.map((category) => `<button class="chip ${categoryFilter === category ? 'selected' : ''}" data-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div></div>
     <div class="section-heading"><div><h2>المواقع المتاحة</h2></div></div>
     ${filteredSites.length ? `<div class="sites-grid">${filteredSites.map(renderSiteCard).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon('search', 28)}</div><h3>لا توجد نتائج</h3><p>جرّب كلمة بحث مختلفة أو أضف موقعًا جديدًا من الإعدادات.</p></div>`}
   </section>`;
@@ -949,7 +966,7 @@ function renderScanner() {
   const preview = selected && scannerPreviewUrl ? `<img class="scanner-document-image" src="${escapeHtml(scannerPreviewUrl)}" alt="معاينة ${escapeHtml(selected.filename)}">` : `<div class="scanner-preview-placeholder">${icon('scanner', 34)}<strong>${selected ? 'جارٍ تحميل المعاينة…' : 'ستظهر معاينة المستند هنا'}</strong><small>ضع المستند على الماسح ثم اختر «مسح مستند»</small></div>`;
   const detail = selected ? `<section class="scanner-workspace"><div class="scanner-preview-card"><div class="scanner-preview-toolbar"><div><strong>معاينة المستند</strong><small>${escapeHtml(selected.filename || '')}</small></div><button class="icon-btn danger" type="button" data-delete-scan="${escapeHtml(selected.id)}" aria-label="حذف المستند" title="حذف المستند">${icon('trash', 17)}</button></div><div class="scanner-preview-canvas">${preview}</div></div><div class="scanner-text-card"><header class="scanner-text-heading"><div><p class="eyebrow">التعرف الضوئي على الحروف</p><h2>النص المستخرج</h2></div><button class="secondary-btn scanner-copy-btn" type="button" data-copy-scan-text ${selected.text && !scannerBusy ? '' : 'disabled'}>${icon('copy', 16)} نسخ النص</button></header><p id="scannerOcrStatus" class="scanner-ocr-status" aria-live="polite">${escapeHtml(scannerOcrStatus || (selected.text ? 'يمكنك مراجعة النص وتصحيحه قبل نسخه.' : 'جارٍ تجهيز النص…'))}</p><textarea id="scannerExtractedText" class="scanner-extracted-text" dir="auto" spellcheck="false" maxlength="100000" ${scannerBusy ? 'disabled' : ''} placeholder="سيظهر هنا النص الذي تم التعرف عليه، ويمكنك تعديله يدويًا…">${escapeHtml(selected.text || '')}</textarea><footer class="scanner-text-footer"><span id="scannerSaveStatus" aria-live="polite">محفوظ على هذا الجهاز فقط</span><button class="ghost-btn" type="button" data-rerun-ocr ${scannerBusy ? 'disabled' : ''}>${icon('refresh', 15)} إعادة استخراج النص</button></footer></div></section>` : `<section class="scanner-empty-panel"><div class="scanner-empty-icon">${icon('scanner', 38)}</div><h2>لا توجد مستندات ممسوحة</h2><p>ابدأ مسح بطاقة الهوية أو أي مستند. ستظهر صورته هنا، ويمكنك حفظها أو طباعتها بصيغ متعددة.</p></section>`;
   const formats = [['pdf', 'PDF'], ['jpeg', 'JPG / JPEG'], ['png', 'PNG'], ['bmp', 'BMP'], ['tiff', 'TIFF'], ['webp', 'WebP']];
-  return `<section class="scanner-view"><header class="view-title-row scanner-title-row"><div><p class="eyebrow">محفوظ محليًا — لا يتم رفع الصور</p><h1>الماسح الضوئي</h1><p class="page-subtitle">امسح مستندًا، راجع النص، ثم احفظه بصيغ الصور الشائعة أو PDF أو اطبعه.</p></div><div class="scanner-actions"><label class="scanner-format-picker"><span>صيغة الحفظ</span><select id="scannerExportFormat">${formats.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button class="secondary-btn" type="button" data-save-scan ${selected ? '' : 'disabled'}>${icon('download', 16)} حفظ باسم</button><button class="secondary-btn" type="button" data-print-scan ${selected ? '' : 'disabled'}>${icon('receipt', 16)} طباعة</button><button class="primary-btn" type="button" data-start-scan ${scannerBusy ? 'disabled' : ''}>${icon('scanner', 18)} ${scannerBusy ? 'جارٍ المعالجة…' : 'مسح مستند'}</button></div></header><div class="scanner-privacy-note"><span>${icon('lock', 16)}</span><p>تُحفظ الصور والنصوص على هذا الكمبيوتر فقط. قد يحتاج تنزيل نموذج اللغة أول مرة إلى الإنترنت؛ لا تُرفع صورة الهوية أو المستند.</p></div><div class="scanner-layout"><aside class="scanner-history-panel"><div class="scanner-history-heading"><div><p class="eyebrow">سجل محلي</p><h2>المستندات</h2></div><span class="record-count">${scannerDocuments.length}</span></div>${scanList || '<div class="scanner-history-empty">لا يوجد سجل بعد</div>'}</aside>${detail}</div></section>`;
+  return `<section class="scanner-view"><header class="view-title-row scanner-title-row"><div><p class="eyebrow">محفوظ محليًا — لا يتم رفع الصور</p><h1>الماسح الضوئي</h1><p class="page-subtitle">امسح مستندًا، راجع النص، ثم احفظه بصيغ الصور الشائعة أو PDF أو اطبعه.</p></div><div class="scanner-actions"><label class="scanner-format-picker"><span>صيغة الحفظ</span><select id="scannerExportFormat">${formats.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button class="secondary-btn" type="button" data-save-scan ${selected ? '' : 'disabled'}>${icon('download', 16)} حفظ باسم</button><button class="secondary-btn" type="button" data-print-scan ${selected ? '' : 'disabled'}>${icon('receipt', 16)} طباعة</button><button class="primary-btn" type="button" data-start-scan ${scannerBusy ? 'disabled' : ''}>${icon('scanner', 18)} ${scannerBusy ? 'جارٍ المعالجة…' : 'مسح مستند'}</button></div></header><div class="scanner-privacy-note"><span>${icon('lock', 16)}</span><p>لأفضل قراءة للهوية، ضعها مستقيمة واختر دقة 300 DPI أو أعلى من نافذة الماسح. تُحسّن الصورة محليًا قبل OCR، ولا تُرفع صورة الهوية إلى خادم.</p></div><div class="scanner-layout"><aside class="scanner-history-panel"><div class="scanner-history-heading"><div><p class="eyebrow">سجل محلي</p><h2>المستندات</h2></div><span class="record-count">${scannerDocuments.length}</span></div>${scanList || '<div class="scanner-history-empty">لا يوجد سجل بعد</div>'}</aside>${detail}</div></section>`;
 }
 
 function renderBanks() {
@@ -1312,7 +1329,13 @@ function bindViewEvents() {
   }));
   document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => { categoryFilter = button.dataset.filter; render(); }));
   const search = document.querySelector('#siteSearch');
-  if (search) search.addEventListener('input', (event) => { searchTerm = event.target.value; render(); const next = document.querySelector('#siteSearch'); next?.focus(); next?.setSelectionRange(searchTerm.length, searchTerm.length); });
+  if (search) {
+    search.addEventListener('input', (event) => { searchTerm = event.target.value; render(); const next = document.querySelector('#siteSearch'); next?.focus(); next?.setSelectionRange(searchTerm.length, searchTerm.length); });
+    search.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); openGoogleSearch(searchTerm); }
+    });
+  }
+  document.querySelector('#googleSearchButton')?.addEventListener('click', () => openGoogleSearch(searchTerm));
   const salesDate = document.querySelector('#salesDate');
   if (salesDate) salesDate.addEventListener('change', (event) => { selectedSalesDate = event.target.value; render(); });
   const reportMonth = document.querySelector('#reportMonth');

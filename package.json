@@ -1,6 +1,6 @@
 {
   "name": "servicehub-desktop",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "packageManager": "pnpm@10.12.4",
   "type": "module",
@@ -21,6 +21,14 @@
   "build": {
     "appId": "com.servicehub.desktop",
     "productName": "Service Hub Desktop",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "macs191",
+        "repo": "albagmi",
+        "releaseType": "release"
+      }
+    ],
     "directories": {
       "output": "release"
     },
@@ -49,6 +57,7 @@
     }
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "pdf-lib": "^1.17.1",
     "sharp": "^0.35.5",
     "tesseract.js": "^7.0.0"

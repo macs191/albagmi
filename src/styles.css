@@ -87,8 +87,10 @@ h3 { margin-bottom: 8px; font-size: 18px; }
 .hero-stat small { color: var(--muted); font-size: 11px; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin: 42px 0 36px; padding: 12px 14px; background: rgba(16,53,58,.48); border: 1px solid var(--line); border-radius: 15px; }
 .home-view .toolbar { margin-top: 0; }
+.home-search-group { min-width: 0; flex: 1 1 420px; display: flex; align-items: center; gap: 10px; }
 .search-box { min-width: 235px; flex: 0 1 330px; display: flex; align-items: center; gap: 10px; color: var(--muted-2); }
 .search-box input { width: 100%; padding: 8px 0; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 13px; }
+.google-search-btn { min-height: 36px; padding-inline: 12px; white-space: nowrap; font-size: 11px; }
 .search-box input::placeholder, input::placeholder { color: #6c918c; }
 .category-chips { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-start; }
 .chip { padding: 8px 13px; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 8px; font-size: 11px; transition: .2s; }
@@ -393,6 +395,11 @@ h3 { margin-bottom: 8px; font-size: 18px; }
   .sidebar-office { display: none; }
 }
 @media (max-width: 680px) {
+  .home-view .toolbar { align-items: stretch; flex-direction: column; gap: 11px; }
+  .home-search-group { width: 100%; flex-basis: auto; }
+  .home-search-group .search-box { min-width: 0; flex: 1; }
+  .google-search-btn { flex: 0 0 auto; }
+  .category-chips { width: 100%; }
   .site-tabs-bar { padding-inline: 7px; }
   .site-home-tab { width: 43px; justify-content: center; padding: 0; }
   .site-home-tab span { display: none; }

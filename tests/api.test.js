@@ -21,6 +21,7 @@ import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, ren
 import { buildOfficeWhatsappUrl, normalizeWhatsappNumber, publicServiceCount, renderPublicOfficePage } from '../src/public-page.js';
 import { bankBalance, bankLedger, bankMovementTotals, filterBankLedger } from '../src/banks.js';
 import { renderPaymentMethodFields } from '../src/bank-view.js';
+import { normalizeOcrText } from '../src/scanner-text.js';
 
 const require = createRequire(import.meta.url);
 const { exportScannerImage } = require('../electron/scanner-formats.cjs');
@@ -671,13 +672,28 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.12');
+  const workflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
+  assert.equal(packageJson.version, '0.1.13');
+  assert.deepEqual(packageJson.build.publish[0], { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
   assert.match(appSource, /data-nav="scanner"/);
   assert.match(appSource, /data-save-scan/);
   assert.match(appSource, /data-print-scan/);
   assert.match(appSource, /createWorker\('ara\+eng'/);
+  assert.match(appSource, /function openGoogleSearch\(query\)/);
+  assert.match(appSource, /id="googleSearchButton"/);
+  assert.match(appSource, /event\.key === 'Enter'.*openGoogleSearch/s);
+  assert.match(appSource, /readScannerOcrImage\(id\)/);
+  assert.match(electronMain, /scanner:ocr-image/);
+  assert.match(preload, /readScannerOcrImage/);
+  assert.match(electronMain, /prepareScannerOcrImage/);
+  assert.match(electronMain, /autoUpdater\.autoDownload = true/);
+  assert.match(electronMain, /autoUpdater\.autoInstallOnAppQuit = true/);
+  assert.match(electronMain, /checkForUpdates\(\)/);
+  assert.match(electronMain, /quitAndInstall/);
+  assert.match(workflow, /latest\.yml/);
+  assert.match(workflow, /\.blockmap/);
   assert.match(appSource, /data-nav="debts"/);
   assert.match(appSource, /data-nav="invoices"/);
   assert.doesNotMatch(appSource, /data-open-whatsapp|WHATSAPP_WEB|web\.whatsapp\.com/);
@@ -738,6 +754,36 @@ test('scanner export creates valid JPEG, PNG, BMP, TIFF, WebP and single-page PD
     const pdf = await PDFDocument.load(await readFile(pdfPath));
     assert.equal(pdf.getPageCount(), 1);
     assert.ok((await readFile(pdfPath)).subarray(0, 5).equals(Buffer.from('%PDF-')));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('OCR keeps detected line order, cleans bidi artifacts and converts Arabic digits to English', () => {
+  const input = '\u200fرقم الهوية: ١٢٣٤٥٦٧٨٩٠\r\nتاريخ الميلاد: ۱۴۰۲ / ٠٥ / ٢١\n\n\nالاسم: محمد   أحمد';
+  assert.equal(normalizeOcrText(input), 'رقم الهوية: 1234567890\nتاريخ الميلاد: 1402 / 05 / 21\n\nالاسم: محمد أحمد');
+});
+
+test('scanner OCR image preparation enhances contrast locally and returns a readable PNG data URL', async () => {
+  const { prepareScannerOcrImage } = require('../electron/scanner-formats.cjs');
+  const directory = await mkdtemp(join(tmpdir(), 'servicehub-ocr-test-'));
+  try {
+    const input = join(directory, 'low-resolution.jpg');
+    const pixels = Buffer.alloc(240 * 120 * 3, 220);
+    for (let y = 30; y < 90; y += 1) for (let x = 35; x < 205; x += 1) {
+      const offset = (y * 240 + x) * 3;
+      pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = (x % 9 < 3 && y % 12 < 8) ? 25 : 210;
+    }
+    await sharp(pixels, { raw: { width: 240, height: 120, channels: 3 } }).jpeg({ quality: 75 }).toFile(input);
+    const result = await prepareScannerOcrImage(input);
+    assert.match(result, /^data:image\/png;base64,/);
+    const output = Buffer.from(result.split(',')[1], 'base64');
+    const metadata = await sharp(output).metadata();
+    assert.equal(metadata.width, 528);
+    assert.equal(metadata.height, 264);
+    const stats = await sharp(output).stats();
+    assert.ok(Math.abs(stats.channels[0].mean - stats.channels[1].mean) < 0.5);
+    assert.ok(Math.abs(stats.channels[1].mean - stats.channels[2].mean) < 0.5);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

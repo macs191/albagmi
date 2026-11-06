@@ -56,4 +56,21 @@ async function exportScannerImage(inputPath, outputPath, format) {
   return sharp(inputPath).toFormat(format, { quality: 92 }).toFile(outputPath);
 }
 
-module.exports = { exportScannerImage };
+async function prepareScannerOcrImage(inputPath) {
+  const metadata = await sharp(inputPath).metadata();
+  if (!metadata.width || !metadata.height) throw new Error('أبعاد صورة المسح غير صالحة.');
+  const longestSide = Math.max(metadata.width, metadata.height);
+  const scale = Math.max(1, Math.min(2.2, 2200 / longestSide));
+  const width = Math.max(1, Math.round(metadata.width * scale));
+  const image = await sharp(inputPath)
+    .rotate()
+    .greyscale()
+    .normalize()
+    .sharpen({ sigma: 1.1, m1: 0.5, m2: 2 })
+    .resize({ width, withoutEnlargement: false, fit: 'inside' })
+    .png({ compressionLevel: 6 })
+    .toBuffer();
+  return `data:image/png;base64,${image.toString('base64')}`;
+}
+
+module.exports = { exportScannerImage, prepareScannerOcrImage };

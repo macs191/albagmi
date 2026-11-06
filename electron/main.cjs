@@ -5,12 +5,15 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
-const { exportScannerImage } = require('./scanner-formats.cjs');
+const { autoUpdater } = require('electron-updater');
+const { exportScannerImage, prepareScannerOcrImage } = require('./scanner-formats.cjs');
 
 let mainWindow;
 const siteViews = new Map();
 const siteSession = () => session.fromPartition('persist:servicehub-sites');
 let downloadHandlerConfigured = false;
+let updateCheckStarted = false;
+let isQuitting = false;
 function configureEditContextMenu(webContents) {
   webContents.on('context-menu', (_event, params = {}) => {
     const flags = params.editFlags || {};
@@ -122,6 +125,13 @@ function readScannerImage(id) {
   const stats = fs.statSync(file);
   if (!stats.isFile() || stats.size > 35 * 1024 * 1024) throw new Error('تعذر قراءة ملف المسح أو تجاوز حجمه الحد المسموح.');
   return `data:image/jpeg;base64,${fs.readFileSync(file).toString('base64')}`;
+}
+
+async function readScannerOcrImage(id) {
+  const file = scannerImagePath(id);
+  const stats = fs.statSync(file);
+  if (!stats.isFile() || stats.size > 35 * 1024 * 1024) throw new Error('تعذر قراءة ملف المسح أو تجاوز حجمه الحد المسموح.');
+  return prepareScannerOcrImage(file);
 }
 
 function deleteScannerImage(id) {
@@ -314,6 +324,33 @@ function createMainWindow() {
   });
 }
 
+function configureAutoUpdates() {
+  if (updateCheckStarted || process.platform !== 'win32' || !app.isPackaged) return;
+  updateCheckStarted = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+  autoUpdater.on('error', (error) => console.warn('Automatic update check failed:', error?.message || error));
+  autoUpdater.on('update-downloaded', (info) => {
+    const version = String(info?.version || 'الجديد');
+    const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    dialog.showMessageBox(owner, {
+      type: 'info',
+      title: 'تحديث Service Hub جاهز',
+      message: `تم تنزيل الإصدار ${version}. هل تريد إعادة تشغيل البرنامج وتثبيت التحديث الآن؟`,
+      buttons: ['إعادة التشغيل والتحديث', 'لاحقًا'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    }).then(({ response }) => {
+      if (response === 0) autoUpdater.quitAndInstall(false, true);
+    }).catch((error) => console.warn('Could not show update prompt:', error?.message || error));
+  });
+  setTimeout(() => {
+    if (!isQuitting) autoUpdater.checkForUpdates().catch((error) => console.warn('Automatic update check failed:', error?.message || error));
+  }, 10000).unref?.();
+}
+
 app.whenReady().then(() => {
   ipcMain.on('sync-site-tabs', (_event, tabs, activeId, bounds) => syncSiteTabs(tabs, activeId, bounds));
   ipcMain.handle('get-remembered-login', () => readRememberedLogin());
@@ -321,10 +358,12 @@ app.whenReady().then(() => {
   ipcMain.handle('clear-remembered-login', () => clearRememberedLogin());
   ipcMain.handle('scanner:acquire', () => acquireScannerImage());
   ipcMain.handle('scanner:read-image', (_event, id) => readScannerImage(id));
+  ipcMain.handle('scanner:ocr-image', (_event, id) => readScannerOcrImage(id));
   ipcMain.handle('scanner:delete-image', (_event, id) => deleteScannerImage(id));
   ipcMain.handle('scanner:copy-text', (_event, text) => copyText(text));
   ipcMain.handle('scanner:export', (_event, request) => exportScannerDocument(request));
   ipcMain.handle('scanner:print', (_event, id) => printScannerDocument(id));
+  configureAutoUpdates();
   ipcMain.handle('print-active-site', () => {
     const active = [...siteViews.values()].find(({ view }) => view.getVisible());
     if (!active) return false;
@@ -336,3 +375,4 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', () => { isQuitting = true; });
