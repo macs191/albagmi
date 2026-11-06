@@ -1,6 +1,10 @@
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const cents = (value) => Math.round(number(value) * 100);
 const money = (value) => Math.round(value) / 100;
+const transactionReceiptMethod = (transaction) => transaction.receiptMethod || (transaction.costPaymentMethod ? 'cash' : transaction.paymentMethod);
+const transactionReceiptAccountId = (transaction) => transaction.receiptBankAccountId || (!transaction.costPaymentMethod ? transaction.bankAccountId : null);
+const transactionCostMethod = (transaction) => transaction.costPaymentMethod || (!transaction.receiptMethod ? transaction.paymentMethod : 'cash');
+const transactionCostAccountId = (transaction) => transaction.costBankAccountId || (!transaction.receiptMethod && transaction.paymentMethod === 'bank' && transaction.costPaymentMethod ? transaction.bankAccountId : null);
 
 export function bankBalance(account, operations = [], transactions = [], expenses = []) {
   if (!account?.id) return 0;
@@ -17,7 +21,10 @@ export function bankBalance(account, operations = [], transactions = [], expense
     }
   }
   for (const transaction of transactions) {
-    if (transaction.paymentMethod === 'bank' && transaction.bankAccountId === account.id) total += cents(transaction.amount);
+    if (transactionReceiptMethod(transaction) === 'bank' && transactionReceiptAccountId(transaction) === account.id) {
+      total += cents(transaction.amount);
+    }
+    if (transactionCostMethod(transaction) === 'bank' && transactionCostAccountId(transaction) === account.id) total -= cents(transaction.costAmount);
   }
   for (const expense of expenses) {
     if (expense.paymentMethod === 'bank' && expense.bankAccountId === account.id) total -= cents(expense.amount);
@@ -41,7 +48,10 @@ export function bankLedger(accountId, accounts = [], operations = [], transactio
     }
   }
   for (const transaction of transactions) {
-    if (transaction.paymentMethod === 'bank' && transaction.bankAccountId === accountId) entries.push({ id: transaction.id, dateKey: transaction.dateKey, createdAt: transaction.createdAt, amount: number(transaction.amount), title: `مبيعات · ${transaction.customer || 'عميل'}`, description: transaction.siteName || '' });
+    if (transactionReceiptMethod(transaction) === 'bank' && transactionReceiptAccountId(transaction) === accountId) {
+      entries.push({ id: `${transaction.id}:revenue`, dateKey: transaction.dateKey, createdAt: transaction.createdAt, amount: number(transaction.amount), title: 'قيمة البيع المحصلة', description: transaction.siteName || '' });
+    }
+    if (transactionCostMethod(transaction) === 'bank' && transactionCostAccountId(transaction) === accountId && number(transaction.costAmount) > 0) entries.push({ id: `${transaction.id}:cost`, dateKey: transaction.dateKey, createdAt: transaction.createdAt, amount: -number(transaction.costAmount), title: 'تكلفة تنفيذ الخدمة', description: transaction.siteName || '' });
   }
   for (const expense of expenses) {
     if (expense.paymentMethod === 'bank' && expense.bankAccountId === accountId) entries.push({ id: expense.id, dateKey: expense.dateKey, createdAt: expense.createdAt, amount: -number(expense.amount), title: `مصروف · ${expense.description || ''}`, description: '' });

@@ -8,7 +8,6 @@ import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
 const NOTEPAD_STORAGE_KEY = 'servicehub-notepad-v1';
-const WHATSAPP_WEB = { id: 'servicehub-whatsapp-web', name: 'WhatsApp', url: 'https://web.whatsapp.com/', image: '' };
 const API_BASE_URL = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const todayKey = () => {
   const d = new Date();
@@ -39,6 +38,8 @@ const initialState = {
 
 let state = loadState();
 let authSession = loadSession();
+let debtRecords = loadDesktopCollection('debts');
+let invoices = loadDesktopCollection('invoices');
 const publicPageSlug = window.location.pathname.match(/^\/m\/([a-z0-9._-]{3,40})\/?$/i)?.[1]?.toLowerCase() || '';
 let publicOfficeProfile = null;
 let publicPageLoading = Boolean(publicPageSlug);
@@ -58,6 +59,8 @@ let selectedBankAccountId = null;
 let bankPeriodMode = 'daily';
 let bankPeriodDate = todayKey();
 let bankPeriodMonth = todayKey().slice(0, 7);
+let bankActionModal = null;
+let settingsDialog = null;
 let editingSiteId = null;
 let reportDialogMode = null;
 let reportDialogStart = todayKey();
@@ -117,6 +120,24 @@ function saveSession(session) {
   authSession = session;
   if (session) sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
   else sessionStorage.removeItem(SESSION_KEY);
+  debtRecords = session?.role === 'client' ? loadDesktopCollection('debts') : [];
+  invoices = session?.role === 'client' ? loadDesktopCollection('invoices') : [];
+}
+
+function desktopCollectionKey(name) {
+  const identity = authSession?.userId ? `uid:${authSession.userId}` : `username:${authSession?.account?.username || 'current'}`;
+  return `servicehub-desktop-${name}-v1:${identity}`;
+}
+
+function loadDesktopCollection(name) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(desktopCollectionKey(name)) || '[]');
+    return Array.isArray(stored) ? stored : [];
+  } catch { return []; }
+}
+
+function saveDesktopCollection(name, collection) {
+  localStorage.setItem(desktopCollectionKey(name), JSON.stringify(collection));
 }
 
 function userStateCacheKey() {
@@ -210,7 +231,7 @@ function saveState(deletionPassword, immediate = false) {
 
 function getViewFromHash() {
   const value = window.location.hash.replace('#', '');
-  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'banks'] : [];
+  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'banks', 'debts', 'invoices'] : [];
   return ['sales', 'settings', ...desktopViews].includes(value) ? value : 'home';
 }
 
@@ -277,7 +298,6 @@ function icon(name, size = 20) {
     home: '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"/><path d="M9 21v-6h6v6"/>',
     notepad: '<path d="M8 3h8l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h8V3M8 13h8M8 17h8"/>',
     bank: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/><circle cx="17" cy="15" r="1"/>',
-    whatsapp: '<path d="M20.5 11.5a8.5 8.5 0 0 1-12.4 7.6L3 20l.9-4.8A8.5 8.5 0 1 1 20.5 11.5Z"/><path d="M8 8.5c.5 2.5 2 4 4.5 5l1.3-1.2 2 .9c.2 1.5-.8 2.4-2.4 2.3-3.7-.5-6.4-3.1-6.8-6.5-.1-1.3.6-2.2 1.8-2.4z"/>',
     sales: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/><path d="M15 6h3v3"/>',
     settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.8 1.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.1h-2.6V20a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1-1.8-1.8.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H6v-2.6h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1 1.8-1.8.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V5h2.6v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1 1.8 1.8-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1v2.6h-.1a1.7 1.7 0 0 0-1.6 1Z"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/>',
@@ -397,7 +417,7 @@ function officePublicPageUrl() {
 }
 
 function mountPublicPageSettings() {
-  const panel = document.querySelector('.office-panel');
+  const panel = document.querySelector('.public-settings-panel');
   if (!panel || panel.querySelector('.public-profile-settings')) return;
   const pageUrl = officePublicPageUrl();
   const linkMarkup = pageUrl
@@ -758,13 +778,13 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item" data-open-whatsapp>${icon('whatsapp')}<span>WhatsApp</span></button>` : ''}
+        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button>` : ''}
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' ? renderNotepad() : currentView === 'banks' && window.desktopBridge?.syncSiteTabs ? renderBanks() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'banks' && window.desktopBridge?.syncSiteTabs ? renderBanks() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
@@ -799,7 +819,77 @@ function renderNotepad() {
 }
 
 function renderBanks() {
-  return renderBankView(state, { selectedAccountId: selectedBankAccountId, periodMode: bankPeriodMode, periodDate: bankPeriodDate, periodMonth: bankPeriodMonth, formatMoney, formatDateTime });
+  return renderBankView(state, { selectedAccountId: selectedBankAccountId, periodMode: bankPeriodMode, periodDate: bankPeriodDate, periodMonth: bankPeriodMonth, actionModal: bankActionModal, formatMoney, formatDateTime });
+}
+
+function renderDebts() {
+  const receivable = debtRecords.filter((item) => item.direction === 'receivable').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const payable = debtRecords.filter((item) => item.direction === 'payable').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const groups = new Map();
+  for (const item of debtRecords) {
+    const key = `${item.direction}:${item.person.trim().toLocaleLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, { direction: item.direction, person: item.person, entries: [], total: 0 });
+    const group = groups.get(key);
+    group.entries.push(item);
+    group.total += Number(item.amount || 0);
+  }
+  const rows = [...groups.values()].map((group) => `<section class="debt-person-card"><header><div><span class="debt-direction ${group.direction}">${group.direction === 'receivable' ? 'مستحق لي' : 'مستحق له عليّ'}</span><h3>${escapeHtml(group.person)}</h3></div><strong class="${group.direction === 'receivable' ? 'amount-positive' : 'amount-negative'}">${formatMoney(group.total)}</strong></header><div class="debt-entry-list">${group.entries.map((entry) => `<div class="debt-entry"><div><span>${escapeHtml(entry.note || 'مبلغ مسجل')}</span><small>${escapeHtml(formatDateTime(entry.createdAt))}</small></div><strong>${formatMoney(entry.amount)}</strong><button class="icon-btn danger" type="button" data-delete-debt="${escapeHtml(entry.id)}" aria-label="حذف المبلغ">${icon('trash', 16)}</button></div>`).join('')}</div></section>`).join('');
+  return `<section class="desktop-ledger-view"><div class="view-title-row"><div><p class="eyebrow">محفوظة على هذا الجهاز فقط</p><h1>المديونيات</h1><p class="page-subtitle">أضف أكثر من مبلغ للشخص نفسه، وتابع ما لك وما عليك.</p></div></div><div class="summary-grid debt-summary"><article class="summary-card sales"><span class="summary-icon">${icon('wallet')}</span><div><small>إجمالي المبالغ المستحقة لي</small><strong>${formatMoney(receivable)}</strong></div></article><article class="summary-card expense"><span class="summary-icon">${icon('receipt')}</span><div><small>إجمالي المبالغ المستحقة عليّ</small><strong>${formatMoney(payable)}</strong></div></article><article class="summary-card net"><span class="summary-icon">${icon('sales')}</span><div><small>صافي الفرق</small><strong>${formatMoney(receivable - payable)}</strong></div></article></div><div class="debt-layout"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">تسجيل حركة</p><h2>إضافة مبلغ</h2></div></div><form id="debtForm" class="form-grid"><label>نوع المديونية<select name="direction"><option value="receivable">لي عند الشخص (مستحق لي)</option><option value="payable">له عندي (مبلغ عليّ للشخص)</option></select></label><label>اسم الشخص<input name="person" required maxlength="120" autocomplete="off" placeholder="اكتب الاسم"></label><label>المبلغ بالريال<input name="amount" type="number" min="0.01" max="100000000" step="0.01" required inputmode="decimal"></label><label>بيان المبلغ (اختياري)<input name="note" maxlength="160" placeholder="سبب المبلغ"></label><button class="primary-btn full-span" type="submit">${icon('plus', 17)} حفظ المبلغ على هذا الجهاز</button></form></section><section class="debt-people"><div class="panel-heading"><div><p class="eyebrow">كشف الأسماء</p><h2>الأرصدة المسجلة</h2></div><span class="record-count">${groups.size} شخص</span></div>${rows || '<div class="empty-state debt-empty"><div class="empty-icon">' + icon('wallet', 26) + '</div><h3>لا توجد مديونيات بعد</h3><p>أضف اسمًا ومبلغًا لتظهر حركة الحساب هنا.</p></div>'}</section></div></section>`;
+}
+
+const arabicOnes = ['', 'واحد', 'اثنان', 'ثلاثة', 'أربعة', 'خمسة', 'ستة', 'سبعة', 'ثمانية', 'تسعة'];
+const arabicTeens = ['عشرة', 'أحد عشر', 'اثنا عشر', 'ثلاثة عشر', 'أربعة عشر', 'خمسة عشر', 'ستة عشر', 'سبعة عشر', 'ثمانية عشر', 'تسعة عشر'];
+const arabicTens = ['', 'عشرة', 'عشرون', 'ثلاثون', 'أربعون', 'خمسون', 'ستون', 'سبعون', 'ثمانون', 'تسعون'];
+const arabicHundreds = ['', 'مائة', 'مائتان', 'ثلاثمائة', 'أربعمائة', 'خمسمائة', 'ستمائة', 'سبعمائة', 'ثمانمائة', 'تسعمائة'];
+function spellArabicUnderThousand(value) {
+  const parts = [];
+  const hundreds = Math.floor(value / 100);
+  const rest = value % 100;
+  if (hundreds) parts.push(arabicHundreds[hundreds]);
+  if (rest >= 10 && rest <= 19) parts.push(arabicTeens[rest - 10]);
+  else if (rest >= 20) {
+    if (rest % 10) parts.push(arabicOnes[rest % 10]);
+    parts.push(arabicTens[Math.floor(rest / 10)]);
+  } else if (rest > 0) parts.push(arabicOnes[rest]);
+  return parts.join(' و');
+}
+function spellArabicNumber(value) {
+  const number = Math.floor(Number(value));
+  if (!Number.isFinite(number) || number < 0 || number > 999999999) return 'مبلغ يتجاوز الحد المسموح';
+  if (number === 0) return 'صفر';
+  const scales = ['', 'ألف', 'مليون'];
+  const parts = [];
+  let remaining = number;
+  for (let index = 2; index >= 0; index -= 1) {
+    const divisor = 1000 ** index;
+    const group = Math.floor(remaining / divisor);
+    remaining %= divisor;
+    if (!group) continue;
+    if (!index) parts.push(spellArabicUnderThousand(group));
+    else if (group === 1) parts.push(scales[index]);
+    else if (group === 2) parts.push(`${scales[index]}ان`);
+    else if (group <= 10) parts.push(`${spellArabicUnderThousand(group)} ${index === 1 ? 'آلاف' : 'ملايين'}`);
+    else parts.push(`${spellArabicUnderThousand(group)} ${scales[index]}ًا`);
+  }
+  return parts.join(' و');
+}
+function amountInArabic(amount) {
+  const value = Math.round(Number(amount) * 100);
+  const riyals = Math.floor(value / 100);
+  const halalas = value % 100;
+  const main = `${spellArabicNumber(riyals)} ريال سعودي`;
+  return halalas ? `${main} و${spellArabicNumber(halalas)} هللة` : main;
+}
+function renderInvoices() {
+  const officeName = authSession.account?.officeName || state.officeName || 'المكتب';
+  const rows = invoices.map((invoice) => `<article class="invoice-row"><div class="invoice-row-main"><span class="invoice-number">${escapeHtml(invoice.number)}</span><strong>${escapeHtml(invoice.customerName)}</strong><small>${escapeHtml(invoice.serviceDescription)} · ${escapeHtml(formatDateTime(invoice.createdAt))}</small></div><strong class="amount-positive">${formatMoney(invoice.amount)}</strong><div class="invoice-row-actions"><button class="icon-btn" type="button" data-print-invoice="${escapeHtml(invoice.id)}" aria-label="طباعة الفاتورة">${icon('receipt', 17)}</button><button class="icon-btn danger" type="button" data-delete-invoice="${escapeHtml(invoice.id)}" aria-label="حذف الفاتورة">${icon('trash', 17)}</button></div></article>`).join('');
+  return `<section class="desktop-ledger-view"><div class="view-title-row"><div><p class="eyebrow">فاتورة باسم المكتب المسجل: ${escapeHtml(officeName)}</p><h1>الفواتير</h1><p class="page-subtitle">أنشئ فاتورة خدمة واطبعها بتنسيق A4، مع كتابة المبلغ بالأرقام والحروف.</p></div></div><div class="invoice-layout"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">فاتورة جديدة</p><h2>بيانات العميل والخدمة</h2></div></div><form id="invoiceForm" class="form-grid"><label>اسم العميل<input name="customerName" maxlength="120" required autocomplete="off"></label><label>السعر بالريال السعودي<input name="amount" type="number" min="0.01" max="999999999" step="0.01" required inputmode="decimal"></label><label class="full-span">وصف الخدمة المقدمة<textarea name="serviceDescription" rows="3" maxlength="500" required></textarea></label><div class="invoice-preview full-span" id="invoiceAmountPreview">سيظهر السعر كتابةً بالعربية بعد إدخاله.</div><button class="primary-btn full-span" type="submit">${icon('receipt', 17)} إنشاء وحفظ الفاتورة</button></form></section><section class="panel invoice-history"><div class="panel-heading"><div><p class="eyebrow">محفوظة على هذا الجهاز فقط</p><h2>سجل الفواتير</h2></div><span class="record-count">${invoices.length} فاتورة</span></div>${rows || '<div class="small-empty">لا توجد فواتير محفوظة حتى الآن.</div>'}</section></div></section>`;
+}
+
+function printInvoice(invoice) {
+  const officeName = authSession.account?.officeName || state.officeName || 'المكتب';
+  const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>فاتورة ${escapeHtml(invoice.number)}</title><style>@page{size:A4;margin:18mm}*{box-sizing:border-box}body{font-family:Tahoma,Arial,sans-serif;color:#142f2a;margin:0}.invoice{min-height:260mm;padding:15mm;border:1px solid #d5e5df}.top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #16836d;padding-bottom:20px}.brand{font-size:27px;color:#08745e;font-weight:bold}.meta{line-height:2;color:#516560;text-align:left}.title{text-align:center;margin:34px 0;color:#17483e;font-size:30px}.customer{margin:24px 0;padding:18px;background:#f1f7f4;border-radius:8px;line-height:2}.desc{min-height:90px;padding:20px 0;border-bottom:1px solid #dfe9e5;line-height:2.1}.amount{margin-top:25px;padding:18px;background:#eff8f4;border-right:5px solid #16836d;border-radius:6px}.amount strong{display:block;font-size:24px;margin-bottom:12px}.amount span{color:#46615a}.signature{display:flex;justify-content:space-between;margin-top:72px}.signature div{width:42%;padding-top:14px;border-top:1px solid #9cafaa;text-align:center;color:#38564e}footer{margin-top:40px;text-align:center;color:#81938e;font-size:11px}@media print{.invoice{border:0}}</style></head><body><main class="invoice"><header class="top"><div><div class="brand">${escapeHtml(officeName)}</div><div>فاتورة خدمات</div></div><div class="meta">رقم الفاتورة: ${escapeHtml(invoice.number)}<br>التاريخ: ${escapeHtml(new Intl.DateTimeFormat('ar-SA', { dateStyle: 'long' }).format(new Date(invoice.createdAt)))}</div></header><h1 class="title">فاتورة</h1><section class="customer"><strong>السادة / ${escapeHtml(invoice.customerName)}</strong><br>تحية طيبة، نرفق لكم تفاصيل الخدمة المقدمة:</section><section class="desc"><strong>وصف الخدمة</strong><br>${escapeHtml(invoice.serviceDescription).replace(/\n/g, '<br>')}</section><section class="amount"><strong>الإجمالي: ${formatMoney(invoice.amount)}</strong><span>المبلغ كتابةً: ${escapeHtml(amountInArabic(invoice.amount))} لا غير.</span></section><section class="signature"><div>توقيع العميل</div><div>ختم وتوقيع ${escapeHtml(officeName)}</div></section><footer>نشكر لكم ثقتكم.</footer></main><script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))</script></body></html>`;
+  if (!openPrintWindow(html)) showToast('تعذر فتح نافذة الطباعة؛ تحقق من السماح بالنوافذ المنبثقة.', 'error');
 }
 
 function mountPaymentMethodFields() {
@@ -813,13 +903,30 @@ function mountPaymentMethodFields() {
 }
 
 function updatePaymentMethodField(prefix) {
-  const method = document.querySelector(`#${prefix}PaymentMethod`);
-  const field = document.querySelector(`#${prefix}BankAccountField`);
-  const select = field?.querySelector('select[name="bankAccountId"]');
-  if (!method || !field || !select) return;
-  const isBank = method.value === 'bank';
-  field.hidden = !isBank;
-  select.required = isBank;
+  const updateField = (methodId, fieldId, selectName) => {
+    const method = document.querySelector(`#${methodId}`);
+    const field = document.querySelector(`#${fieldId}`);
+    const select = field?.querySelector(`select[name="${selectName}"]`);
+    if (!method || !field || !select) return;
+    const isBank = method.value === 'bank';
+    field.hidden = !isBank;
+    select.required = isBank;
+  };
+  if (prefix === 'transaction') {
+    updateField('transactionPaymentMethod', 'transactionBankAccountField', 'costBankAccountId');
+    updateField('transactionReceiptMethod', 'transactionReceiptBankField', 'receiptBankAccountId');
+  } else updateField(`${prefix}PaymentMethod`, `${prefix}BankAccountField`, 'bankAccountId');
+}
+
+function updateTransactionProfitPreview() {
+  const form = document.querySelector('#transactionForm');
+  const preview = document.querySelector('#transactionProfitPreview');
+  if (!form || !preview) return;
+  const data = new FormData(form);
+  const amount = Number(data.get('amount')) || 0;
+  const cost = Number(data.get('costAmount')) || 0;
+  preview.textContent = `الربح المتوقع: ${formatMoney(amount - cost)} (المقبوض ${formatMoney(amount)} − التكلفة ${formatMoney(cost)})`;
+  preview.classList.toggle('profit-loss', amount < cost);
 }
 
 function decoratePaymentRecords() {
@@ -830,8 +937,16 @@ function decoratePaymentRecords() {
     if (!record) return;
     const small = button.closest('.record-row')?.querySelector('.record-main small');
     if (!small) return;
-    const bankName = state.bankAccounts.find((account) => account.id === record.bankAccountId)?.name;
-    small.textContent += ` · ${record.paymentMethod === 'bank' ? `بنكي${bankName ? `: ${bankName}` : ''}` : 'نقدي'}`;
+    if (type === 'transaction') {
+      const costMethod = record.costPaymentMethod || record.paymentMethod || 'cash';
+      const receiptMethod = record.receiptMethod || (record.costPaymentMethod ? 'cash' : record.paymentMethod || 'cash');
+      const costBank = state.bankAccounts.find((account) => account.id === (record.costBankAccountId || record.bankAccountId))?.name;
+      const receiptBank = state.bankAccounts.find((account) => account.id === (record.receiptBankAccountId || (!record.costPaymentMethod ? record.bankAccountId : null)))?.name;
+      small.textContent += ` · قبض ${receiptMethod === 'bank' ? `بنكي${receiptBank ? `: ${receiptBank}` : ''}` : 'نقدي'} · تكلفة ${costMethod === 'bank' ? `من البنك${costBank ? `: ${costBank}` : ''}` : 'نقدًا'}`;
+    } else {
+      const bankName = state.bankAccounts.find((account) => account.id === record.bankAccountId)?.name;
+      small.textContent += ` · ${record.paymentMethod === 'bank' ? `بنكي${bankName ? `: ${bankName}` : ''}` : 'نقدي'}`;
+    }
   });
 }
 
@@ -847,28 +962,36 @@ function renderSales() {
   const transactions = state.transactions.filter((item) => selectedSalesDate === 'all' || item.dateKey === selectedSalesDate);
   const expenses = state.expenses.filter((item) => selectedSalesDate === 'all' || item.dateKey === selectedSalesDate);
   const salesTotal = transactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const transactionCostsTotal = transactions.reduce((sum, item) => sum + Number(item.costAmount || 0), 0);
+  const transactionProfit = salesTotal - transactionCostsTotal;
   const expensesTotal = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const net = salesTotal - expensesTotal;
+  const net = transactionProfit - expensesTotal;
   return `<section class="sales-view">
     <div class="view-title-row"><div><p class="eyebrow">الحسابات اليومية</p><h1>المبيعات والمصروفات</h1><p class="page-subtitle">سجّل معاملاتك وتابع صافي اليوم في لحظة.</p></div><label class="date-picker">${icon('calendar', 17)}<span>تصفية حسب اليوم</span><input id="salesDate" type="date" value="${selectedSalesDate === 'all' ? todayKey() : selectedSalesDate}"></label></div>
     <div class="panel report-tools"><div class="report-description"><p class="eyebrow">التقارير والطباعة</p><h2>تقارير المكتب</h2><p class="helper-text">راجع السجلات وحدد اليوم أو الفترة قبل الطباعة على ورقة A4.</p></div><div class="report-actions"><button class="secondary-btn" id="printDailyReport" type="button">التقرير اليومي A4</button><label class="report-month">شهر البداية<input id="reportMonth" type="month" value="${selectedReportMonth}"></label><button class="primary-btn" id="printMonthlyReport" type="button">التقرير الشهري / فترة A4</button></div></div>
-    <div class="summary-grid"><div class="summary-card sales"><span class="summary-icon">${icon('receipt')}</span><div><small>إجمالي المعاملات</small><strong>${formatMoney(salesTotal)}</strong></div></div><div class="summary-card expense"><span class="summary-icon">${icon('wallet')}</span><div><small>إجمالي المصروفات</small><strong>${formatMoney(expensesTotal)}</strong></div></div><div class="summary-card net"><span class="summary-icon">${icon('sales')}</span><div><small>صافي اليوم</small><strong>${formatMoney(net)}</strong></div></div></div>
-    <div class="sales-layout"><div class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">إضافة جديدة</p><h2>تسجيل معاملة</h2></div><span class="panel-index">01</span></div><form id="transactionForm" class="form-grid"><label>اسم العميل<input name="customer" required placeholder="مثال: عبدالله محمد"></label><label>نوع الخدمة<select id="transactionSiteSelect" name="siteId" required><option value="">اختر نوع المعاملة</option>${state.sites.map((site) => `<option value="${escapeHtml(site.id)}">${escapeHtml(site.name)}</option>`).join('')}<option value="__custom__">إضافة بند يدوياً…</option></select></label><label id="customServiceField" class="full-span" hidden>اسم البند اليدوي<input name="customServiceName" maxlength="120" placeholder="اكتب نوع المعاملة"></label><label>سعر المعاملة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="primary-btn" type="submit">${icon('plus', 17)} تسجيل المعاملة</button></form></div><div class="panel form-panel expense-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المصاريف</p><h2>تسجيل مصروف</h2></div><span class="panel-index">02</span></div><form id="expenseForm" class="form-grid"><label>نوع المصروف<input name="description" required placeholder="مثال: طعام، وقود، شحن"></label><label>القيمة<input name="amount" required type="number" min="0" step="0.01" placeholder="0.00"></label><button class="secondary-btn" type="submit">${icon('plus', 17)} إضافة المصروف</button></form></div></div>
-    <div class="records-layout"><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">الحركة المالية</p><h2>المعاملات</h2></div><span class="record-count">${transactions.length}</span></div>${transactions.length ? `<div class="records-list">${transactions.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar">${escapeHtml(item.customer.trim().slice(0, 1))}</span><div class="record-main"><strong>${escapeHtml(item.customer)}</strong><small>${escapeHtml(item.siteName)} · ${formatDateTime(item.createdAt)}</small></div><b class="amount-positive">+ ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="transaction:${item.id}" aria-label="حذف المعاملة">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد معاملات في التاريخ المحدد.</div>`}</div><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">المصروفات</p><h2>المصاريف اليومية</h2></div><span class="record-count">${expenses.length}</span></div>${expenses.length ? `<div class="records-list">${expenses.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar expense-avatar">${icon('wallet', 17)}</span><div class="record-main"><strong>${escapeHtml(item.description)}</strong><small>${formatDateTime(item.createdAt)}</small></div><b class="amount-negative">- ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="expense:${item.id}" aria-label="حذف المصروف">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد مصروفات في التاريخ المحدد.</div>`}</div></div>
+    <div class="summary-grid sales-summary-grid"><div class="summary-card sales"><span class="summary-icon">${icon('receipt')}</span><div><small>إيراد البيع المقبوض</small><strong>${formatMoney(salesTotal)}</strong></div></div><div class="summary-card expense"><span class="summary-icon">−</span><div><small>تكلفة تنفيذ المعاملات</small><strong>${formatMoney(transactionCostsTotal)}</strong></div></div><div class="summary-card net"><span class="summary-icon">${icon('sales')}</span><div><small>ربح المعاملات</small><strong>${formatMoney(transactionProfit)}</strong></div></div><div class="summary-card expense"><span class="summary-icon">${icon('wallet')}</span><div><small>مصروفات أخرى · الصافي</small><strong>${formatMoney(expensesTotal)} · ${formatMoney(net)}</strong></div></div></div>
+    <div class="sales-layout"><div class="panel form-panel"><div class="panel-heading"><div><p class="eyebrow">إضافة جديدة</p><h2>تسجيل معاملة</h2></div><span class="panel-index">01</span></div><form id="transactionForm" class="form-grid"><label>نوع الخدمة<select id="transactionSiteSelect" name="siteId" required><option value="">اختر نوع المعاملة</option>${state.sites.map((site) => `<option value="${escapeHtml(site.id)}">${escapeHtml(site.name)}</option>`).join('')}<option value="__custom__">إضافة بند يدوياً…</option></select></label><label id="customServiceField" class="full-span" hidden>اسم البند اليدوي<input name="customServiceName" maxlength="120" placeholder="اكتب نوع المعاملة"></label><label>المبلغ المقبوض من العميل / سعر البيع<input name="amount" required type="number" min="0.01" step="0.01" placeholder="مثال: 600.00"></label><label>تكلفة تنفيذ الخدمة<input name="costAmount" required type="number" min="0" step="0.01" value="0.00" placeholder="مثال: 500.00"></label><p class="transaction-profit-preview full-span" id="transactionProfitPreview">الربح المتوقع: 0.00 ر.س</p><button class="primary-btn" type="submit">${icon('plus', 17)} تسجيل المعاملة</button></form></div><div class="panel form-panel expense-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المصاريف الأخرى</p><h2>تسجيل مصروف</h2></div><span class="panel-index">02</span></div><form id="expenseForm" class="form-grid"><label>نوع المصروف<input name="description" required placeholder="مثال: طعام، وقود، شحن"></label><label>القيمة<input name="amount" required type="number" min="0.01" step="0.01" placeholder="0.00"></label><button class="secondary-btn" type="submit">${icon('plus', 17)} إضافة المصروف</button></form></div></div>
+    <div class="records-layout"><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">الحركة المالية</p><h2>المعاملات</h2></div><span class="record-count">${transactions.length}</span></div>${transactions.length ? `<div class="records-list">${transactions.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar">${icon('receipt', 17)}</span><div class="record-main"><strong>${escapeHtml(item.siteName)}</strong><small>${formatDateTime(item.createdAt)} · البيع ${formatMoney(item.amount)} · التكلفة ${formatMoney(item.costAmount || 0)} · الربح ${formatMoney(Number(item.amount || 0) - Number(item.costAmount || 0))}</small></div><b class="amount-positive">+ ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="transaction:${item.id}" aria-label="حذف المعاملة">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد معاملات في التاريخ المحدد.</div>`}</div><div class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">المصروفات</p><h2>المصاريف اليومية</h2></div><span class="record-count">${expenses.length}</span></div>${expenses.length ? `<div class="records-list">${expenses.slice().reverse().map((item) => `<div class="record-row"><span class="record-avatar expense-avatar">${icon('wallet', 17)}</span><div class="record-main"><strong>${escapeHtml(item.description)}</strong><small>${formatDateTime(item.createdAt)}</small></div><b class="amount-negative">- ${formatMoney(item.amount)}</b><button class="row-delete" data-delete-record="expense:${item.id}" aria-label="حذف المصروف">${icon('trash', 17)}</button></div>`).join('')}</div>` : `<div class="small-empty">لا توجد مصروفات في التاريخ المحدد.</div>`}</div></div>
   </section>`;
 }
 
 function renderReportDialog() {
   const report = aggregateRangeReport(reportDialogStart, reportDialogMode === 'daily' ? reportDialogStart : reportDialogEnd, state.transactions, state.expenses);
   const records = [
-    ...report.transactions.map((item) => ({ kind: 'sale', dateKey: item.dateKey, createdAt: item.createdAt, title: item.customer || 'عميل', detail: `${item.siteName || 'معاملة'} · ${item.paymentMethod === 'bank' ? `بنكي · ${state.bankAccounts.find((account) => account.id === item.bankAccountId)?.name || 'حساب'}` : 'نقدي'}`, amount: Number(item.amount || 0) })),
+    ...report.transactions.map((item) => {
+      const receiptMethod = item.receiptMethod || (item.costPaymentMethod ? 'cash' : item.paymentMethod || 'cash');
+      const costMethod = item.costPaymentMethod || item.paymentMethod || 'cash';
+      const receiptBankName = state.bankAccounts.find((account) => account.id === (item.receiptBankAccountId || (!item.costPaymentMethod ? item.bankAccountId : null)))?.name;
+      const costBankName = state.bankAccounts.find((account) => account.id === (item.costBankAccountId || (item.costPaymentMethod ? item.bankAccountId : null)))?.name;
+      return { kind: 'sale', dateKey: item.dateKey, createdAt: item.createdAt, title: item.siteName || 'معاملة', detail: `استلام ${receiptMethod === 'bank' ? `بنكي · ${receiptBankName || 'حساب'}` : 'نقدي'} · تكلفة ${costMethod === 'bank' ? `من البنك · ${costBankName || 'حساب'}` : 'نقدية'} · التكلفة ${formatMoney(item.costAmount || 0)} · الربح ${formatMoney(Number(item.amount || 0) - Number(item.costAmount || 0))}`, amount: Number(item.amount || 0) };
+    }),
     ...report.expenses.map((item) => ({ kind: 'expense', dateKey: item.dateKey, createdAt: item.createdAt, title: item.description || 'مصروف', detail: `مصروف · ${item.paymentMethod === 'bank' ? `بنكي · ${state.bankAccounts.find((account) => account.id === item.bankAccountId)?.name || 'حساب'}` : 'نقدي'}`, amount: -Number(item.amount || 0) }))
   ].sort((a, b) => `${a.dateKey}${a.createdAt || ''}`.localeCompare(`${b.dateKey}${b.createdAt || ''}`));
   const recordRows = records.length ? records.map((item) => `<div class="report-record-row"><span class="report-record-type ${item.kind}">${item.kind === 'sale' ? 'مبيعة' : 'مصروف'}</span><div><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)} · ${escapeHtml(item.dateKey)} · ${escapeHtml(item.createdAt ? formatDateTime(item.createdAt) : '')}</small></div><b class="${item.amount >= 0 ? 'amount-positive' : 'amount-negative'}">${item.amount >= 0 ? '+' : '−'} ${formatMoney(Math.abs(item.amount))}</b></div>`).join('') : '<div class="small-empty">لا توجد سجلات في الفترة المحددة.</div>';
   const dateFields = reportDialogMode === 'daily'
     ? `<label>يوم التقرير<input id="reportDialogStart" type="date" required value="${escapeHtml(reportDialogStart)}"></label>`
     : `<label>من تاريخ<input id="reportDialogStart" type="date" required value="${escapeHtml(reportDialogStart)}"></label><label>إلى تاريخ<input id="reportDialogEnd" type="date" required value="${escapeHtml(reportDialogEnd)}"></label>`;
-  return `<div class="modal-backdrop" data-report-backdrop><section class="modal-card report-modal" role="dialog" aria-modal="true" aria-labelledby="reportDialogTitle"><header class="modal-heading"><div><p class="eyebrow">معاينة السجلات</p><h2 id="reportDialogTitle">${reportDialogMode === 'daily' ? 'التقرير اليومي' : 'تقرير الشهر / الفترة'}</h2></div><button type="button" class="icon-btn" data-close-report aria-label="إغلاق">${icon('close', 18)}</button></header><div class="report-dialog-filters">${dateFields}</div><div class="report-dialog-summary"><div><small>المبيعات</small><strong>${formatMoney(report.salesTotal)}</strong></div><div><small>المصروفات</small><strong>${formatMoney(report.expensesTotal)}</strong></div><div><small>الصافي</small><strong>${formatMoney(report.net)}</strong></div></div><p class="report-dialog-count">${records.length} سجل — هذه القائمة ستظهر في التقرير المطبوع.</p><div class="report-dialog-records">${recordRows}</div><footer class="modal-actions"><button type="button" class="ghost-btn" data-close-report>إلغاء</button><button type="button" class="primary-btn" id="confirmPrintReport">${icon('receipt', 17)} طباعة التقرير A4</button></footer></section></div>`;
+  return `<div class="modal-backdrop" data-report-backdrop><section class="modal-card report-modal" role="dialog" aria-modal="true" aria-labelledby="reportDialogTitle"><header class="modal-heading"><div><p class="eyebrow">معاينة السجلات</p><h2 id="reportDialogTitle">${reportDialogMode === 'daily' ? 'التقرير اليومي' : 'تقرير الشهر / الفترة'}</h2></div><button type="button" class="icon-btn" data-close-report aria-label="إغلاق">${icon('close', 18)}</button></header><div class="report-dialog-filters">${dateFields}</div><div class="report-dialog-summary"><div><small>إيراد البيع</small><strong>${formatMoney(report.salesTotal)}</strong></div><div><small>تكلفة المعاملات</small><strong>${formatMoney(report.transactionCostsTotal)}</strong></div><div><small>ربح المعاملات</small><strong>${formatMoney(report.transactionProfit)}</strong></div><div><small>مصروفات أخرى</small><strong>${formatMoney(report.expensesTotal)}</strong></div><div><small>الصافي</small><strong>${formatMoney(report.net)}</strong></div></div><p class="report-dialog-count">${records.length} سجل — هذه القائمة ستظهر في التقرير المطبوع.</p><div class="report-dialog-records">${recordRows}</div><footer class="modal-actions"><button type="button" class="ghost-btn" data-close-report>إلغاء</button><button type="button" class="primary-btn" id="confirmPrintReport">${icon('receipt', 17)} طباعة التقرير A4</button></footer></section></div>`;
 }
 
 function openReportDialog(mode) {
@@ -891,7 +1014,12 @@ function closeReportDialog() {
 
 function printSelectedReport() {
   const officeName = authSession.account?.officeName || state.officeName;
-  const withPaymentNames = (records) => records.map((item) => ({ ...item, bankName: state.bankAccounts.find((account) => account.id === item.bankAccountId)?.name || '' }));
+  const withPaymentNames = (records) => records.map((item) => ({
+    ...item,
+    bankName: state.bankAccounts.find((account) => account.id === item.bankAccountId)?.name || '',
+    receiptBankName: state.bankAccounts.find((account) => account.id === (item.receiptBankAccountId || (!item.costPaymentMethod ? item.bankAccountId : null)))?.name || '',
+    costBankName: state.bankAccounts.find((account) => account.id === (item.costBankAccountId || (item.costPaymentMethod ? item.bankAccountId : null)))?.name || ''
+  }));
   const html = reportDialogMode === 'daily'
     ? renderDailyReportHtml({ officeName, report: aggregateDailyReport(reportDialogStart, withPaymentNames(state.transactions), withPaymentNames(state.expenses)) })
     : renderRangeReportHtml({ officeName, report: aggregateRangeReport(reportDialogStart, reportDialogEnd, withPaymentNames(state.transactions), withPaymentNames(state.expenses)) });
@@ -919,35 +1047,78 @@ function renderRecordDeleteDialog() {
 }
 
 function renderSettings() {
-  const editingSite = state.sites.find((site) => site.id === editingSiteId);
-  const requestStatus = clientPasswordRequest?.status === 'pending' ? 'طلب تغيير كلمة المرور قيد مراجعة المدير.' : clientPasswordRequest?.status === 'approved' ? 'وافق المدير على آخر طلب تغيير كلمة المرور.' : clientPasswordRequest?.status === 'rejected' ? 'رفض المدير آخر طلب تغيير كلمة المرور؛ يمكنك إرسال طلب جديد.' : 'تغيير كلمة المرور يحتاج موافقة مدير النظام.';
   const deletionPasswordExists = Boolean(state.recordDeletionProtection?.hash && state.recordDeletionProtection?.salt);
-  return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">إدارة بيانات المكتب وكلمة المرور ومواقع الخدمات.</p></div></div>
-    <div class="settings-grid"><div class="panel office-panel"><div class="panel-heading"><div><p class="eyebrow">بيانات الحساب</p><h2>${escapeHtml(authSession.account?.officeName || state.officeName)}</h2></div></div><p class="helper-text">صاحب المكتب: ${escapeHtml(authSession.account?.ownerName || '—')}</p><p class="helper-text">رقم الهاتف: ${escapeHtml(authSession.account?.phone || '—')}</p><p class="helper-text">اسم الدخول: ${escapeHtml(authSession.account?.username || '—')}</p><form id="officeNameForm" class="form-grid account-settings-form"><label class="full-span">اسم المكتب<input name="officeName" required maxlength="120" value="${escapeHtml(authSession.account?.officeName || state.officeName)}"></label><button class="primary-btn" type="submit">حفظ اسم المكتب</button></form><hr class="settings-divider"><form id="passwordChangeRequestForm" class="form-grid account-settings-form"><p class="helper-text full-span">${requestStatus}</p><label>كلمة المرور الجديدة<input name="password" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><label>تأكيد كلمة المرور<input name="confirmPassword" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><button class="secondary-btn full-span" type="submit" ${clientPasswordRequest?.status === 'pending' ? 'disabled' : ''}>إرسال طلب تغيير كلمة المرور</button></form><hr class="settings-divider"><div class="record-protection-settings"><p class="eyebrow">حماية المعاملات</p><h3>${deletionPasswordExists ? 'رمز حذف السجلات مضبوط' : 'اضبط رمز حذف السجلات'}</h3><p class="helper-text">لا يمكن حذف معاملة أو مصروف من الواجهة أو الخادم إلا بهذا الرمز. لا تحفظ كلمة المرور نفسها.</p><form id="recordDeletionPasswordForm" class="form-grid account-settings-form">${deletionPasswordExists ? '<label class="full-span">رمز الحذف الحالي<input name="currentPassword" type="password" required minlength="8" maxlength="128" autocomplete="current-password"></label>' : ''}<label>رمز الحذف الجديد<input name="newPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><label>تأكيد الرمز<input name="confirmPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><button class="primary-btn full-span" type="submit">${deletionPasswordExists ? 'تغيير رمز الحذف' : 'حفظ رمز الحذف'}</button></form></div></div><div class="panel add-site-panel"><div class="panel-heading"><div><p class="eyebrow">دليل المواقع</p><h2>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h2></div>${editingSite ? `<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>` : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة <span class="label-hint">اختياري</span><input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div></div>
-    <div class="panel manage-panel"><div class="panel-heading"><div><p class="eyebrow">إدارة المحتوى</p><h2>المواقع المضافة</h2></div><span class="record-count">${state.sites.length}</span></div><div class="manage-list">${state.sites.map((site) => `<div class="manage-row">${imageMarkup(site, 'mini-image')}<div class="record-main"><strong>${escapeHtml(site.name)}</strong><small>${escapeHtml(site.category)}</small></div><div class="manage-actions"><button class="icon-btn" data-edit-site="${escapeHtml(site.id)}" aria-label="تعديل ${escapeHtml(site.name)}">${icon('edit', 17)}</button><button class="icon-btn danger" data-delete-site="${escapeHtml(site.id)}" aria-label="حذف ${escapeHtml(site.name)}">${icon('trash', 17)}</button></div></div>`).join('')}</div></div>
-  </section>`;
+  const options = [
+    ['account', 'بيانات المستخدم', 'اسم المكتب وطلب تغيير كلمة المرور', 'user'],
+    ['sites', 'دليل المواقع', `${state.sites.length} موقعًا · إضافة أو تعديل أو حذف`, 'globe'],
+    ['protection', 'حماية المعلومات', deletionPasswordExists ? 'رمز حذف السجلات مضبوط' : 'اضبط رمز حماية المعاملات', 'lock'],
+    ['public', 'صفحة المكتب العامة', 'رابط الصفحة وموقع المكتب على الخرائط', 'external']
+  ];
+  return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">اختر القسم؛ تفتح أدواته في نافذة مستقلة لتبقى الشاشة مرتبة.</p></div></div><div class="settings-launch-grid">${options.map(([key, title, desc, iconName]) => `<button class="settings-launch-card" type="button" data-settings-open="${key}"><span class="settings-launch-icon">${icon(iconName)}</span><span><strong>${title}</strong><small>${desc}</small></span><span class="settings-launch-arrow">←</span></button>`).join('')}</div>${settingsDialog ? renderSettingsDialog() : ''}</section>`;
+}
+
+function renderSettingsDialog() {
+  const editingSite = state.sites.find((site) => site.id === editingSiteId);
+  const deletionPasswordExists = Boolean(state.recordDeletionProtection?.hash && state.recordDeletionProtection?.salt);
+  const requestStatus = clientPasswordRequest?.status === 'pending' ? 'طلب تغيير كلمة المرور قيد مراجعة المدير.' : clientPasswordRequest?.status === 'approved' ? 'وافق المدير على آخر طلب تغيير كلمة المرور.' : clientPasswordRequest?.status === 'rejected' ? 'رفض المدير آخر طلب تغيير كلمة المرور؛ يمكنك إرسال طلب جديد.' : 'تغيير كلمة المرور يحتاج موافقة مدير النظام.';
+  const headings = { account: 'بيانات المستخدم', sites: 'دليل المواقع', protection: 'حماية المعلومات', public: 'صفحة المكتب العامة' };
+  let content = '';
+  if (settingsDialog === 'account') content = `<div class="settings-dialog-content"><section class="settings-info-strip"><span>صاحب المكتب: <strong>${escapeHtml(authSession.account?.ownerName || '—')}</strong></span><span>رقم الهاتف: <strong>${escapeHtml(authSession.account?.phone || '—')}</strong></span><span>اسم الدخول: <strong>${escapeHtml(authSession.account?.username || '—')}</strong></span></section><form id="officeNameForm" class="form-grid account-settings-form"><label class="full-span">اسم المكتب<input name="officeName" required maxlength="120" value="${escapeHtml(authSession.account?.officeName || state.officeName)}"></label><button class="primary-btn" type="submit">حفظ اسم المكتب</button></form><hr class="settings-divider"><form id="passwordChangeRequestForm" class="form-grid account-settings-form"><p class="helper-text full-span">${requestStatus}</p><label>كلمة المرور الجديدة<input name="password" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><label>تأكيد كلمة المرور<input name="confirmPassword" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label><button class="secondary-btn full-span" type="submit" ${clientPasswordRequest?.status === 'pending' ? 'disabled' : ''}>إرسال طلب تغيير كلمة المرور</button></form></div>`;
+  else if (settingsDialog === 'protection') content = `<div class="record-protection-settings"><p class="helper-text">لا يمكن حذف معاملة أو مصروف من الواجهة أو الخادم إلا بهذا الرمز. لا تحفظ كلمة المرور نفسها.</p><form id="recordDeletionPasswordForm" class="form-grid account-settings-form">${deletionPasswordExists ? '<label class="full-span">رمز الحذف الحالي<input name="currentPassword" type="password" required minlength="8" maxlength="128" autocomplete="current-password"></label>' : ''}<label>رمز الحذف الجديد<input name="newPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><label>تأكيد الرمز<input name="confirmPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><button class="primary-btn full-span" type="submit">${deletionPasswordExists ? 'تغيير رمز الحذف' : 'حفظ رمز الحذف'}</button></form></div>`;
+  else if (settingsDialog === 'sites') content = `<div class="settings-dialog-content"><div class="panel add-site-panel"><div class="panel-heading"><h3>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h3>${editingSite ? '<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>' : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة (اختياري)<input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div><div class="manage-list settings-sites-list">${state.sites.map((site) => `<div class="manage-row">${imageMarkup(site, 'mini-image')}<div class="record-main"><strong>${escapeHtml(site.name)}</strong><small>${escapeHtml(site.category)}</small></div><div class="manage-actions"><button class="icon-btn" data-edit-site="${escapeHtml(site.id)}" aria-label="تعديل ${escapeHtml(site.name)}">${icon('edit', 17)}</button><button class="icon-btn danger" data-delete-site="${escapeHtml(site.id)}" aria-label="حذف ${escapeHtml(site.name)}">${icon('trash', 17)}</button></div></div>`).join('')}</div></div>`;
+  else if (settingsDialog === 'public') content = '<div class="panel office-panel public-settings-panel"></div>';
+  return `<div class="modal-backdrop settings-modal-backdrop" data-settings-backdrop><section class="modal-card settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsDialogTitle"><header class="modal-heading"><div><p class="eyebrow">الإعدادات</p><h2 id="settingsDialogTitle">${escapeHtml(headings[settingsDialog] || 'إعدادات')}</h2></div><button type="button" class="icon-btn" data-close-settings aria-label="إغلاق">×</button></header>${content}<footer class="modal-actions"><button type="button" class="ghost-btn" data-close-settings>إغلاق</button></footer></section></div>`;
 }
 
 function bindViewEvents() {
   mountPaymentMethodFields();
   decoratePaymentRecords();
   mountPublicPageSettings();
+  document.querySelectorAll('[data-settings-open]').forEach((button) => button.addEventListener('click', () => { settingsDialog = button.dataset.settingsOpen; render(); }));
+  document.querySelectorAll('[data-close-settings]').forEach((button) => button.addEventListener('click', () => { settingsDialog = null; editingSiteId = null; render(); }));
+  document.querySelector('[data-settings-backdrop]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) { settingsDialog = null; editingSiteId = null; render(); } });
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
-  document.querySelector('[data-open-whatsapp]')?.addEventListener('click', () => openSiteTab(WHATSAPP_WEB));
   for (const prefix of ['transaction', 'expense']) {
     document.querySelector(`#${prefix}PaymentMethod`)?.addEventListener('change', () => updatePaymentMethodField(prefix));
     updatePaymentMethodField(prefix);
   }
+  document.querySelector('#transactionReceiptMethod')?.addEventListener('change', () => updatePaymentMethodField('transaction'));
   document.querySelector('#bankPeriodMode')?.addEventListener('change', (event) => { bankPeriodMode = event.target.value; render(); });
   document.querySelector('#bankPeriodDate')?.addEventListener('change', (event) => { bankPeriodDate = event.target.value || todayKey(); render(); });
   document.querySelector('#bankPeriodMonth')?.addEventListener('change', (event) => { bankPeriodMonth = event.target.value || todayKey().slice(0, 7); render(); });
+  document.querySelectorAll('[data-bank-action]').forEach((button) => button.addEventListener('click', () => { bankActionModal = button.dataset.bankAction; render(); }));
+  document.querySelectorAll('[data-close-bank-action]').forEach((button) => button.addEventListener('click', () => { bankActionModal = null; render(); }));
+  document.querySelector('[data-bank-modal-backdrop]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) { bankActionModal = null; render(); } });
   document.querySelectorAll('[data-open-bank]').forEach((button) => button.addEventListener('click', () => { selectedBankAccountId = button.dataset.openBank; render(); }));
   document.querySelector('[data-back-banks]')?.addEventListener('click', () => { selectedBankAccountId = null; render(); });
   document.querySelectorAll('[data-bank-image]').forEach((image) => image.addEventListener('error', () => {
     const fallback = document.createElement('span'); fallback.className = 'bank-logo-fallback'; fallback.textContent = 'BANK'; image.replaceWith(fallback);
   }, { once: true }));
   document.querySelector('#notepadText')?.addEventListener('input', (event) => saveNotepad(event.currentTarget.value));
+  document.querySelector('#debtForm')?.addEventListener('submit', handleDebtSubmit);
+  document.querySelectorAll('[data-delete-debt]').forEach((button) => button.addEventListener('click', () => {
+    const record = debtRecords.find((item) => item.id === button.dataset.deleteDebt);
+    if (!record || !window.confirm(`هل تريد حذف مبلغ ${formatMoney(record.amount)} المسجل باسم ${record.person}؟`)) return;
+    debtRecords = debtRecords.filter((item) => item.id !== record.id);
+    saveDesktopCollection('debts', debtRecords);
+    render();
+  }));
+  document.querySelector('#invoiceForm')?.addEventListener('submit', handleInvoiceSubmit);
+  document.querySelector('#invoiceForm input[name="amount"]')?.addEventListener('input', (event) => {
+    const preview = document.querySelector('#invoiceAmountPreview');
+    preview.textContent = event.currentTarget.value ? `كتابةً: ${amountInArabic(event.currentTarget.value)} لا غير.` : 'سيظهر السعر كتابةً بالعربية بعد إدخاله.';
+  });
+  document.querySelectorAll('[data-print-invoice]').forEach((button) => button.addEventListener('click', () => {
+    const invoice = invoices.find((item) => item.id === button.dataset.printInvoice);
+    if (invoice) printInvoice(invoice);
+  }));
+  document.querySelectorAll('[data-delete-invoice]').forEach((button) => button.addEventListener('click', () => {
+    if (!window.confirm('هل تريد حذف هذه الفاتورة من هذا الجهاز؟')) return;
+    invoices = invoices.filter((item) => item.id !== button.dataset.deleteInvoice);
+    saveDesktopCollection('invoices', invoices);
+    render();
+  }));
   document.querySelector('#clearNotepad')?.addEventListener('click', () => {
     if (!notepadText || !window.confirm('هل تريد مسح كل محتوى المفكرة من هذا الجهاز؟')) return;
     notepadText = '';
@@ -992,6 +1163,9 @@ function bindViewEvents() {
   document.querySelector('#confirmPrintReport')?.addEventListener('click', printSelectedReport);
   document.querySelector('#transactionSiteSelect')?.addEventListener('change', updateCustomServiceField);
   updateCustomServiceField();
+  document.querySelector('#transactionForm')?.addEventListener('input', updateTransactionProfitPreview);
+  document.querySelector('#transactionForm')?.addEventListener('change', updateTransactionProfitPreview);
+  updateTransactionProfitPreview();
   document.querySelector('#transactionForm')?.addEventListener('submit', handleTransactionSubmit);
   document.querySelector('#expenseForm')?.addEventListener('submit', handleExpenseSubmit);
   document.querySelector('#bankCreateForm')?.addEventListener('submit', handleBankCreate);
@@ -1016,9 +1190,36 @@ function bindViewEvents() {
   document.querySelectorAll('[data-cancel-delete]').forEach((button) => button.addEventListener('click', closeRecordDeleteDialog));
   document.querySelector('[data-delete-backdrop]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) closeRecordDeleteDialog(); });
   document.querySelector('[data-cancel-edit]')?.addEventListener('click', () => { editingSiteId = null; render(); });
-  document.querySelectorAll('[data-edit-site]').forEach((button) => button.addEventListener('click', () => { editingSiteId = button.dataset.editSite; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); }));
+  document.querySelectorAll('[data-edit-site]').forEach((button) => button.addEventListener('click', () => { editingSiteId = button.dataset.editSite; settingsDialog = 'sites'; render(); }));
   document.querySelectorAll('[data-delete-site]').forEach((button) => button.addEventListener('click', () => deleteSite(button.dataset.deleteSite)));
   document.querySelectorAll('[data-delete-record]').forEach((button) => button.addEventListener('click', () => deleteRecord(button.dataset.deleteRecord)));
+}
+
+function handleDebtSubmit(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const person = String(form.get('person') || '').trim();
+  const amount = Number(form.get('amount'));
+  if (!person || !Number.isFinite(amount) || amount <= 0) return showToast('أدخل الاسم ومبلغًا أكبر من صفر.', 'error');
+  debtRecords.unshift({ id: uid('debt'), person, amount: Math.round(amount * 100) / 100, direction: form.get('direction') === 'payable' ? 'payable' : 'receivable', note: String(form.get('note') || '').trim(), createdAt: new Date().toISOString() });
+  saveDesktopCollection('debts', debtRecords);
+  showToast('تم حفظ المبلغ محليًا على هذا الجهاز.');
+  render();
+}
+
+function handleInvoiceSubmit(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const customerName = String(form.get('customerName') || '').trim();
+  const serviceDescription = String(form.get('serviceDescription') || '').trim();
+  const amount = Number(form.get('amount'));
+  if (!customerName || !serviceDescription || !Number.isFinite(amount) || amount <= 0 || amount > 999999999) return showToast('تحقق من اسم العميل ووصف الخدمة والسعر.', 'error');
+  const createdAt = new Date().toISOString();
+  const invoice = { id: uid('invoice'), number: `INV-${todayKey().replaceAll('-', '')}-${Date.now()}`, customerName, serviceDescription, amount: Math.round(amount * 100) / 100, createdAt, officeName: authSession.account?.officeName || state.officeName || 'المكتب' };
+  invoices.unshift(invoice);
+  saveDesktopCollection('invoices', invoices);
+  showToast('تم إنشاء الفاتورة وحفظها على هذا الجهاز.');
+  render();
 }
 
 async function handleSiteSave(event) {
@@ -1189,16 +1390,21 @@ function handleTransactionSubmit(event) {
   event.preventDefault();
   const data = new FormData(event.currentTarget);
   const amount = Number(data.get('amount'));
+  const costAmount = Number(data.get('costAmount') || 0);
   const siteId = String(data.get('siteId') || '');
   const site = state.sites.find((item) => item.id === siteId);
   const customName = String(data.get('customServiceName') || '').trim();
   const siteName = siteId === '__custom__' ? customName : site?.name;
-  if (!siteName || siteId === '__custom__' && customName.length > 120 || !amount || amount < 0) return showToast('أدخل نوع المعاملة وبياناتها بشكل صحيح.', 'error');
-  const paymentMethod = window.desktopBridge?.syncSiteTabs && data.get('paymentMethod') === 'bank' ? 'bank' : 'cash';
-  const bankAccountId = paymentMethod === 'bank' ? String(data.get('bankAccountId') || '') : null;
-  if (paymentMethod === 'bank' && !state.bankAccounts.some((account) => account.id === bankAccountId)) return showToast('اختر حسابًا بنكيًا صالحًا أو أضف حسابًا جديدًا من قسم الحسابات البنكية.', 'error');
+  if (!siteName || siteId === '__custom__' && customName.length > 120 || !Number.isFinite(amount) || amount <= 0 || !Number.isFinite(costAmount) || costAmount < 0 || costAmount > 1_000_000_000) return showToast('أدخل نوع المعاملة وسعر البيع والتكلفة بشكل صحيح.', 'error');
+  const desktop = Boolean(window.desktopBridge?.syncSiteTabs);
+  const costPaymentMethod = desktop && data.get('costPaymentMethod') === 'bank' ? 'bank' : 'cash';
+  const costBankAccountId = costPaymentMethod === 'bank' ? String(data.get('costBankAccountId') || '') : null;
+  const receiptMethod = desktop && data.get('receiptMethod') === 'bank' ? 'bank' : 'cash';
+  const receiptBankAccountId = receiptMethod === 'bank' ? String(data.get('receiptBankAccountId') || '') : null;
+  if (costPaymentMethod === 'bank' && !state.bankAccounts.some((account) => account.id === costBankAccountId)) return showToast('اختر البنك الذي دُفعت منه تكلفة الخدمة.', 'error');
+  if (receiptMethod === 'bank' && !state.bankAccounts.some((account) => account.id === receiptBankAccountId)) return showToast('اختر البنك الذي استلم قيمة العميل.', 'error');
   const createdAt = new Date().toISOString();
-  state.transactions.push({ id: uid('txn'), customer: String(data.get('customer')).trim(), siteId: site?.id || null, siteName, amount, paymentMethod, bankAccountId, createdAt, dateKey: todayKey() });
+  state.transactions.push({ id: uid('txn'), siteId: site?.id || null, siteName, amount, costAmount, profitAmount: amount - costAmount, paymentMethod: costPaymentMethod, bankAccountId: costBankAccountId, costPaymentMethod, costBankAccountId, receiptMethod, receiptBankAccountId, createdAt, dateKey: todayKey() });
   saveState();
   showToast('تم تسجيل المعاملة');
   render();
@@ -1228,6 +1434,7 @@ function bankImageInput(value) {
 
 function addBankOperation(operation) {
   state.bankOperations.push({ id: uid('bank-op'), createdAt: new Date().toISOString(), dateKey: todayKey(), ...operation });
+  bankActionModal = null;
   saveState();
   render();
 }
@@ -1245,6 +1452,7 @@ function handleBankCreate(event) {
   const account = { id: uid('bank'), name, imageUrl, openingBalance: Math.round(openingBalance * 100) / 100, createdAt, dateKey: todayKey() };
   state.bankAccounts.push(account);
   selectedBankAccountId = account.id;
+  bankActionModal = null;
   saveState();
   showToast('تمت إضافة الحساب البنكي.');
   render();
@@ -1260,6 +1468,7 @@ function handleBankEdit(event) {
   if (!name || name.length > 80 || imageUrl === null) return showToast('تحقق من اسم الحساب ورابط الصورة الآمن (HTTPS).', 'error');
   account.name = name;
   account.imageUrl = imageUrl;
+  bankActionModal = null;
   saveState();
   showToast('تم تحديث بيانات الحساب.');
   render();

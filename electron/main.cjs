@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -6,23 +6,18 @@ let mainWindow;
 const siteViews = new Map();
 const siteSession = () => session.fromPartition('persist:servicehub-sites');
 let downloadHandlerConfigured = false;
-let sitePermissionsConfigured = false;
-
-function isWhatsAppUrl(value) {
-  try { return new URL(String(value)).hostname.toLowerCase() === 'web.whatsapp.com'; }
-  catch { return false; }
-}
-
-function configureSitePermissions() {
-  if (sitePermissionsConfigured) return;
-  sitePermissionsConfigured = true;
-  const partition = siteSession();
-  partition.setPermissionRequestHandler((webContents, permission, callback, details = {}) => {
-    callback(permission === 'notifications' && isWhatsAppUrl(details.requestingUrl || webContents?.getURL()));
+function configureEditContextMenu(webContents) {
+  webContents.on('context-menu', (_event, params = {}) => {
+    const flags = params.editFlags || {};
+    const template = [
+      { label: 'قص', role: 'cut', enabled: Boolean(flags.canCut) },
+      { label: 'نسخ', role: 'copy', enabled: Boolean(flags.canCopy) },
+      { label: 'لصق', role: 'paste', enabled: Boolean(flags.canPaste) },
+      { type: 'separator' },
+      { label: 'تحديد الكل', role: 'selectAll', enabled: true }
+    ];
+    Menu.buildFromTemplate(template).popup({ window: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined });
   });
-  partition.setPermissionCheckHandler((webContents, permission, requestingOrigin) => (
-    permission === 'notifications' && isWhatsAppUrl(requestingOrigin || webContents?.getURL())
-  ));
 }
 
 function configureDownloads() {
@@ -105,11 +100,7 @@ function createSiteView(tab) {
       backgroundThrottling: false
     }
   });
-  if (isWhatsAppUrl(tab.url)) {
-    const electronUserAgent = view.webContents.getUserAgent();
-    const browserCompatibleUserAgent = electronUserAgent.replace(/\sElectron\/[^\s]+/gi, '');
-    if (browserCompatibleUserAgent !== electronUserAgent) view.webContents.setUserAgent(browserCompatibleUserAgent);
-  }
+  configureEditContextMenu(view.webContents);
   view.webContents.setAudioMuted(false);
   view.webContents.setWindowOpenHandler(({ url }) => {
     const safeUrl = safeHttpUrl(url);
@@ -127,7 +118,6 @@ function createSiteView(tab) {
     if (isMainFrame) loadConnectionError(view, validatedUrl || tab.url, errorCode, description);
   });
   configureDownloads();
-  configureSitePermissions();
   mainWindow.contentView.addChildView(view);
   siteViews.set(tab.id, { view, url: tab.url });
   view.webContents.loadURL(tab.url).catch(() => {});
@@ -183,6 +173,7 @@ function createMainWindow() {
     }
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  configureEditContextMenu(mainWindow.webContents);
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if ((input.control || input.meta) && input.key.toLowerCase() === 'p') {
       const active = [...siteViews.values()].find(({ view }) => view.getVisible());

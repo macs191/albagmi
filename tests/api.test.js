@@ -568,15 +568,17 @@ test('client state API requires the saved deletion password before removing tran
 
 test('daily report totals include only the chosen date and render an A4 portrait report safely', () => {
   const transactions = [
-    { dateKey: '2026-10-30', amount: 100, customer: '<script>alert(1)</script>', siteName: 'تأمين', createdAt: '2026-10-30T10:00:00Z' },
-    { dateKey: '2026-10-30', amount: 25.5, customer: 'عميل 2', siteName: 'خدمة', createdAt: '2026-10-30T11:00:00Z' },
+    { dateKey: '2026-10-30', amount: 100, costAmount: 40, siteName: '<script>alert(1)</script>', createdAt: '2026-10-30T10:00:00Z' },
+    { dateKey: '2026-10-30', amount: 25.5, siteName: 'خدمة', createdAt: '2026-10-30T11:00:00Z' },
     { dateKey: '2026-10-29', amount: 900, customer: 'يوم سابق', siteName: 'خدمة', createdAt: '2026-10-29T11:00:00Z' }
   ];
   const expenses = [{ dateKey: '2026-10-30', amount: 10, description: 'مصاريف', createdAt: '2026-10-30T12:00:00Z' }];
   const report = aggregateDailyReport('2026-10-30', transactions, expenses);
   assert.equal(report.salesTotal, 125.5);
+  assert.equal(report.transactionCostsTotal, 40);
+  assert.equal(report.transactionProfit, 85.5);
   assert.equal(report.expensesTotal, 10);
-  assert.equal(report.net, 115.5);
+  assert.equal(report.net, 75.5);
   assert.equal(report.transactions.length, 2);
   const html = renderDailyReportHtml({ officeName: 'مكتب آمن', report });
   assert.match(html, /size: A4 portrait/);
@@ -600,12 +602,12 @@ test('monthly report summarizes every calendar day, including zero-sales days, o
   assert.equal(report.days[30].salesTotal, 0);
   const html = renderMonthlyReportHtml({ officeName: 'مكتب آمن', report });
   assert.match(html, /size: A4 landscape/);
-  assert.match(html, /إجمالي مبيعات الشهر/);
+  assert.match(html, /إيراد البيع/);
 });
 
 test('custom report date ranges include only the selected records and escape printed details', () => {
   const transactions = [
-    { dateKey: '2026-03-02', amount: 50, customer: '<b>عميل</b>', siteName: 'بند يدوي', createdAt: '2026-03-02T09:00:00Z' },
+    { dateKey: '2026-03-02', amount: 50, siteName: '<b>عميل</b>', createdAt: '2026-03-02T09:00:00Z' },
     { dateKey: '2026-03-04', amount: 25, customer: 'عميل 2', siteName: 'نجم', createdAt: '2026-03-04T10:00:00Z' },
     { dateKey: '2026-03-05', amount: 500, customer: 'خارج الفترة', siteName: 'خدمة', createdAt: '2026-03-05T10:00:00Z' }
   ];
@@ -661,11 +663,18 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.10');
+  assert.equal(packageJson.version, '0.1.11');
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
-  assert.match(appSource, /data-open-whatsapp/);
-  assert.match(appSource, /https:\/\/web\.whatsapp\.com\//);
+  assert.match(appSource, /data-nav="debts"/);
+  assert.match(appSource, /data-nav="invoices"/);
+  assert.doesNotMatch(appSource, /data-open-whatsapp|WHATSAPP_WEB|web\.whatsapp\.com/);
+  assert.match(appSource, /function renderDebts\(\)/);
+  assert.match(appSource, /function renderInvoices\(\)/);
+  assert.match(appSource, /function amountInArabic\(amount\)/);
+  assert.match(appSource, /servicehub-desktop-\$\{name\}-v1/);
+  assert.match(appSource, /data-print-invoice/);
+  assert.ok(appSource.includes('توقيع ${escapeHtml(officeName)}'));
   assert.match(appSource, /servicehub-notepad-v1/);
   assert.match(packageJson.scripts['package:win'], /vite build --base=\.\//);
   assert.match(packageJson.scripts['package:win'], /--win nsis --publish never/);
@@ -679,8 +688,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /persist:servicehub-sites/);
   assert.match(electronMain, /backgroundThrottling: false/);
   assert.match(electronMain, /setAudioMuted\(false\)/);
-  assert.match(electronMain, /setPermissionRequestHandler/);
-  assert.match(electronMain, /permission === 'notifications' && isWhatsAppUrl/);
+  assert.doesNotMatch(electronMain, /WhatsApp|whatsapp|isWhatsAppUrl|setPermissionRequestHandler/);
   assert.match(electronMain, /safeStorage\.encryptString/);
   assert.match(electronMain, /safeStorage\.decryptString/);
   assert.match(preload, /getRememberedLogin/);
@@ -712,7 +720,7 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
 });
 
 test('bank ledger reconciles deposits, withdrawals, transfers, bank sales, expenses and date filters', () => {
-  const accounts = [{ id: 'bank-a', name: 'الأول', openingBalance: 100 }, { id: 'bank-b', name: 'الثاني', openingBalance: 40 }];
+  const accounts = [{ id: 'bank-a', name: 'الأول', openingBalance: 100 }, { id: 'bank-b', name: 'الثاني', openingBalance: 40 }, { id: 'bank-c', name: 'الثالث', openingBalance: 0 }];
   const operations = [
     { id: 'd1', type: 'deposit', bankAccountId: 'bank-a', amount: 25, dateKey: '2026-11-03', createdAt: '2026-11-03T09:00:00Z' },
     { id: 'w1', type: 'withdrawal', bankAccountId: 'bank-a', amount: 5, dateKey: '2026-11-03', createdAt: '2026-11-03T10:00:00Z' },
@@ -721,16 +729,22 @@ test('bank ledger reconciles deposits, withdrawals, transfers, bank sales, expen
   ];
   const transactions = [
     { id: 'sale-bank', paymentMethod: 'bank', bankAccountId: 'bank-a', amount: 50, customer: 'سارة', siteName: 'تأمين', dateKey: '2026-11-05', createdAt: '2026-11-05T13:00:00Z' },
-    { id: 'sale-cash', paymentMethod: 'cash', amount: 99, dateKey: '2026-11-05', createdAt: '2026-11-05T13:30:00Z' }
+    { id: 'sale-cash', paymentMethod: 'cash', amount: 99, dateKey: '2026-11-05', createdAt: '2026-11-05T13:30:00Z' },
+    { id: 'service-cost-bank', siteName: 'خدمة', amount: 600, costAmount: 500, receiptMethod: 'cash', costPaymentMethod: 'bank', costBankAccountId: 'bank-c', dateKey: '2026-11-05', createdAt: '2026-11-05T15:00:00Z' }
   ];
   const expenses = [{ id: 'expense-bank', paymentMethod: 'bank', bankAccountId: 'bank-a', amount: 10, description: 'وقود', dateKey: '2026-11-05', createdAt: '2026-11-05T14:00:00Z' }];
   assert.equal(bankBalance(accounts[0], operations, transactions, expenses), 130);
   assert.equal(bankBalance(accounts[1], operations, transactions, expenses), 68);
+  assert.equal(bankBalance(accounts[2], operations, transactions, expenses), -500, 'cash received from the customer is not deposited into the bank; only the bank-paid cost is deducted');
   const aLedger = bankLedger('bank-a', accounts, operations, transactions, expenses);
   const daily = filterBankLedger(aLedger, 'daily', '2026-11-05');
   assert.equal(daily.length, 2);
   assert.deepEqual(bankMovementTotals(daily), { incoming: 50, outgoing: 10, net: 40, count: 2 });
   assert.equal(filterBankLedger(aLedger, 'monthly', '2026-11').length, 5);
+  const costLedger = bankLedger('bank-c', accounts, operations, transactions, expenses);
+  assert.equal(costLedger.length, 1);
+  assert.equal(costLedger[0].amount, -500);
+  assert.equal(costLedger[0].title, 'تكلفة تنفيذ الخدمة');
   const bTransfer = bankLedger('bank-b', accounts, operations, transactions, expenses).find((entry) => entry.title.includes('تحويل من'));
   assert.equal(bTransfer.amount, 30);
 });
@@ -745,26 +759,37 @@ test('bank controls and payment method fields are Windows-only and image links r
   assert.match(appSource, /paymentMethod, bankAccountId/);
   assert.match(viewSource, /url\.protocol === 'https:'/);
   assert.match(fields, /value="cash">نقدي/);
-  assert.match(fields, /value="bank">بنكي/);
+  assert.match(fields, /طريقة دفع التكلفة/);
+  assert.match(fields, /طريقة استلام مبلغ العميل/);
+  assert.match(fields, /value="bank"/);
+  assert.match(appSource, /name="costAmount"/);
+  assert.doesNotMatch(appSource, /name="customer"/);
+  assert.match(appSource, /data-settings-open/);
+  assert.match(appSource, /settingsDialog \? renderSettingsDialog\(\)/);
+  assert.match(electronMain, /configureEditContextMenu/);
+  assert.match(electronMain, /role: 'cut'/);
+  assert.match(electronMain, /role: 'copy'/);
+  assert.match(electronMain, /role: 'paste'/);
+  assert.match(electronMain, /role: 'selectAll'/);
   assert.match(fields, /الراجحي/);
-  assert.match(electronMain, /browserCompatibleUserAgent/);
-  assert.match(electronMain, /setUserAgent\(browserCompatibleUserAgent\)/);
-  assert.match(electronMain, /isWhatsAppUrl\(tab\.url\)/);
+  assert.doesNotMatch(electronMain, /WhatsApp|whatsapp|isWhatsAppUrl|browserCompatibleUserAgent/);
 });
 
 test('A4 daily and range reports include payment method and bank name', () => {
   const report = {
     dateKey: '2026-11-05', startKey: '2026-11-05', endKey: '2026-11-05', days: [],
-    transactions: [{ customer: 'عميل', siteName: 'تأمين', amount: 120, paymentMethod: 'bank', bankName: 'الراجحي', dateKey: '2026-11-05', createdAt: '2026-11-05T12:00:00Z' }],
+    transactions: [{ siteName: 'تأمين', amount: 120, costAmount: 60, paymentMethod: 'bank', bankName: 'الراجحي', dateKey: '2026-11-05', createdAt: '2026-11-05T12:00:00Z' }],
     expenses: [{ description: 'رسوم', amount: 10, paymentMethod: 'cash', dateKey: '2026-11-05', createdAt: '2026-11-05T12:05:00Z' }],
-    salesTotal: 120, expensesTotal: 10, net: 110
+    salesTotal: 120, transactionCostsTotal: 60, transactionProfit: 60, expensesTotal: 10, net: 50
   };
   const dailyHtml = renderDailyReportHtml({ officeName: 'مكتب', report });
   const rangeHtml = renderRangeReportHtml({ officeName: 'مكتب', report });
   for (const html of [dailyHtml, rangeHtml]) {
-    assert.match(html, /طريقة الدفع/);
+    assert.match(html, /الاستلام/);
+    assert.match(html, /التكلفة/);
     assert.match(html, /بنكي · الراجحي/);
     assert.match(html, /نقدي/);
+    assert.match(html, /الربح/);
   }
 });
 

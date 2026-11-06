@@ -1,6 +1,6 @@
 {
   "name": "servicehub-desktop",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "packageManager": "pnpm@10.12.4",
   "type": "module",
@@ -33,7 +33,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "ServiceHub-Desktop-${version}-Setup.exe"
