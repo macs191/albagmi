@@ -1,5 +1,6 @@
 node_modules/
 release/
+/public/tesseract/
 .env
 .env.*
 !.env.example

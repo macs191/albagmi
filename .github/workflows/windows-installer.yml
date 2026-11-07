@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.13
+      - v0.1.14
 
 permissions:
   contents: write
@@ -40,9 +40,9 @@ jobs:
       - name: Publish installer on GitHub Release
         shell: pwsh
         run: |
-          $installer = Get-Item "release/ServiceHub-Desktop-0.1.13-Setup.exe"
+          $installer = Get-Item "release/ServiceHub-Desktop-0.1.14-Setup.exe"
           $blockmap = Get-Item "$($installer.FullName).blockmap"
           $latest = Get-Item "release/latest.yml"
-          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.13" --notes "إضافة البحث في Google من الشاشة الرئيسية وفتحه في تبويب جديد، وتحسين OCR لبطاقات الهوية بتقوية الصورة محليًا والمحافظة على ترتيب النص وتحويل الأرقام العربية إلى الإنجليزية، وتفعيل التحديث التلقائي عبر GitHub Releases. يشمل ميزات الماسح وحفظ الصور وPDF والطباعة والمديونيات والفواتير." --latest --repo $env:GITHUB_REPOSITORY
+          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.14" --notes "إصلاح مشكلة OCR عبر تضمين عامل ومحرك Tesseract ونماذج العربية والإنجليزية داخل التطبيق، فلا يحتاج التعرف الضوئي لتنزيلها من الإنترنت عند المسح. يتضمن تحسينات البحث في Google والماسح والتحديث التلقائي." --latest --repo $env:GITHUB_REPOSITORY
         env:
           GH_TOKEN: ${{ github.token }}

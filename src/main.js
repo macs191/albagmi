@@ -307,7 +307,7 @@ async function openScannerDocument(id) {
     if (selectedScannerDocumentId !== id) return;
     scannerPreviewUrl = imageUrl;
     const document = scannerDocuments.find((item) => item.id === id);
-    if (document && !document.text) await extractScannerText(id, imageUrl);
+    if (document && !document.text) await extractScannerText(id);
     else { scannerOcrStatus = 'يمكنك مراجعة النص وتصحيحه قبل نسخه.'; render(); }
   } catch {
     scannerOcrStatus = 'تعذر فتح صورة هذا المستند. قد يكون الملف حُذف من الكمبيوتر.';
@@ -315,28 +315,20 @@ async function openScannerDocument(id) {
   }
 }
 
-async function extractScannerText(id, imageUrl) {
+async function extractScannerText(id) {
   scannerBusy = true;
-  scannerOcrStatus = 'تحميل محرك التعرف الضوئي…';
+  scannerOcrStatus = 'تهيئة محرك OCR المحلي…';
   render();
-  let worker;
+  const removeProgressListener = window.desktopBridge?.onScannerOcrProgress?.((message) => {
+    if (message?.id !== id || selectedScannerDocumentId !== id) return;
+    const statusLabels = { 'loading tesseract core': 'تهيئة محرك OCR المحلي', 'initializing tesseract': 'تهيئة محرك القراءة', 'loading language traineddata': 'تحميل نماذج العربية والإنجليزية من الجهاز', 'initializing api': 'تهيئة اللغات', 'recognizing text': 'قراءة محتوى المستند' };
+    const progress = Number.isFinite(message.progress) ? ` · ${Math.round(message.progress * 100)}٪` : '';
+    scannerOcrStatus = `${statusLabels[message.status] || 'معالجة المستند'}${progress}`;
+    const status = document.querySelector('#scannerOcrStatus');
+    if (status) status.textContent = scannerOcrStatus;
+  });
   try {
-    const { createWorker } = await import('tesseract.js');
-    worker = await createWorker('ara+eng', 1, {
-      logger: (message) => {
-        if (selectedScannerDocumentId !== id) return;
-        const progress = Number.isFinite(message.progress) ? ` · ${Math.round(message.progress * 100)}٪` : '';
-        const statusLabels = { 'loading tesseract core': 'تحميل محرك التعرف الضوئي', 'initializing tesseract': 'تهيئة محرك القراءة', 'loading language traineddata': 'تحميل نموذج العربية والإنجليزية', 'initializing api': 'تهيئة اللغات', 'recognizing text': 'قراءة محتوى المستند' };
-        scannerOcrStatus = `${statusLabels[message.status] || 'معالجة المستند'}${progress}`;
-        const status = document.querySelector('#scannerOcrStatus');
-        if (status) status.textContent = scannerOcrStatus;
-      }
-    });
-    await worker.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
-    const ocrImage = window.desktopBridge?.readScannerOcrImage
-      ? await window.desktopBridge.readScannerOcrImage(id)
-      : imageUrl;
-    const result = await worker.recognize(ocrImage);
+    const result = await window.desktopBridge.recognizeScannerText(id);
     const documentRecord = scannerDocuments.find((item) => item.id === id);
     if (documentRecord) {
       documentRecord.text = normalizeOcrText(result.data?.text).slice(0, 100000);
@@ -344,10 +336,11 @@ async function extractScannerText(id, imageUrl) {
       scannerOcrStatus = documentRecord.text ? 'اكتمل استخراج النص. راجعه وصححه قبل النسخ.' : 'لم يظهر نص واضح؛ يمكنك كتابة النص يدويًا أو إعادة المسح.';
     }
   } catch (error) {
-    scannerOcrStatus = 'تعذر استخراج النص تلقائيًا. تحقق من اتصال الإنترنت لتنزيل نموذج اللغة، أو اكتب النص يدويًا.';
-    showToast('تعذر تشغيل التعرف الضوئي. صورة المستند محفوظة ويمكنك إدخال النص يدويًا.', 'error');
+    console.error('[Service Hub OCR] Failed to initialize or recognize text:', error);
+    scannerOcrStatus = `تعذر تشغيل محرك OCR المحلي. ${String(error?.message || '').slice(0, 350)} يمكنك كتابة النص يدويًا.`;
+    showToast('تعذر تشغيل OCR المحلي. صورة المستند محفوظة ويمكنك إدخال النص يدويًا.', 'error');
   } finally {
-    if (worker) await worker.terminate().catch(() => {});
+    removeProgressListener?.();
     scannerBusy = false;
     render();
   }

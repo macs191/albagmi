@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
+const { createWorker } = require('tesseract.js');
 const { autoUpdater } = require('electron-updater');
 const { exportScannerImage, prepareScannerOcrImage } = require('./scanner-formats.cjs');
 
@@ -127,11 +128,36 @@ function readScannerImage(id) {
   return `data:image/jpeg;base64,${fs.readFileSync(file).toString('base64')}`;
 }
 
-async function readScannerOcrImage(id) {
+async function recognizeScannerText(id, event) {
   const file = scannerImagePath(id);
   const stats = fs.statSync(file);
   if (!stats.isFile() || stats.size > 35 * 1024 * 1024) throw new Error('تعذر قراءة ملف المسح أو تجاوز حجمه الحد المسموح.');
-  return prepareScannerOcrImage(file);
+  const imageData = await prepareScannerOcrImage(file);
+  const imageBuffer = Buffer.from(imageData.slice(imageData.indexOf(',') + 1), 'base64');
+  let worker;
+  try {
+    worker = await createWorker('ara+eng', 1, {
+      langPath: path.join(__dirname, '..', 'dist', 'tesseract', 'tessdata'),
+      gzip: true,
+      cacheMethod: 'none',
+      logger: (message) => {
+        if (event.sender.isDestroyed()) return;
+        event.sender.send('scanner:ocr-progress', {
+          id,
+          status: String(message.status || ''),
+          progress: Number.isFinite(message.progress) ? message.progress : null
+        });
+      }
+    });
+    await worker.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
+    const result = await worker.recognize(imageBuffer);
+    return { text: String(result.data?.text || '') };
+  } catch (error) {
+    console.error('[Service Hub OCR]', error);
+    throw new Error(`تعذر تشغيل محرك OCR المحلي: ${String(error?.message || error).slice(0, 500)}`);
+  } finally {
+    if (worker) await worker.terminate().catch(() => {});
+  }
 }
 
 function deleteScannerImage(id) {
@@ -358,7 +384,7 @@ app.whenReady().then(() => {
   ipcMain.handle('clear-remembered-login', () => clearRememberedLogin());
   ipcMain.handle('scanner:acquire', () => acquireScannerImage());
   ipcMain.handle('scanner:read-image', (_event, id) => readScannerImage(id));
-  ipcMain.handle('scanner:ocr-image', (_event, id) => readScannerOcrImage(id));
+  ipcMain.handle('scanner:recognize-text', (event, id) => recognizeScannerText(id, event));
   ipcMain.handle('scanner:delete-image', (_event, id) => deleteScannerImage(id));
   ipcMain.handle('scanner:copy-text', (_event, text) => copyText(text));
   ipcMain.handle('scanner:export', (_event, request) => exportScannerDocument(request));

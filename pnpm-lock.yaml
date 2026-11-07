@@ -21,6 +21,12 @@ importers:
         specifier: ^7.0.0
         version: 7.0.0
     devDependencies:
+      '@tesseract.js-data/ara':
+        specifier: 1.0.0
+        version: 1.0.0
+      '@tesseract.js-data/eng':
+        specifier: 1.0.0
+        version: 1.0.0
       electron:
         specifier: ^36.3.2
         version: 36.9.5
@@ -553,6 +559,12 @@ packages:
   '@szmarczak/http-timer@4.0.6':
     resolution: {integrity: sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w==}
     engines: {node: '>=10'}
+
+  '@tesseract.js-data/ara@1.0.0':
+    resolution: {integrity: sha512-bB60Av6dsv9LRUrlaM6SgnAwjUpdbanw9Jf3mbhDCZAhX7Cp8u7YjI8EWfCvMhH3R2QJT/2EA8cijqPANOhwaA==}
+
+  '@tesseract.js-data/eng@1.0.0':
+    resolution: {integrity: sha512-mbTumm6KQPUHyzTPQaF3ObXYnx0SqqfV2nabqFVQBwD6Kl7PhGSLSzOlfFTWy0P3BjghaSKA2W9GB19Jk+ZcTg==}
 
   '@types/cacheable-request@6.0.3':
     resolution: {integrity: sha512-IQ3EbTzGxIigb1I3qPZc1rWJnH0BmSKv5QYTalEwweFvyBDLSAe24zP0le/hyi7ecGfZVlIVAg4BZqb8WBwKqw==}
@@ -2066,6 +2078,10 @@ snapshots:
   '@szmarczak/http-timer@4.0.6':
     dependencies:
       defer-to-connect: 2.0.1
+
+  '@tesseract.js-data/ara@1.0.0': {}
+
+  '@tesseract.js-data/eng@1.0.0': {}
 
   '@types/cacheable-request@6.0.3':
     dependencies:

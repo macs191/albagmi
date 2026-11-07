@@ -1,0 +1,2 @@
+Language model @tesseract.js-data/ara@1.0.0: MIT
+Language model @tesseract.js-data/eng@1.0.0: MIT
