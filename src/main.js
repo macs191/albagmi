@@ -958,8 +958,12 @@ function renderNotepad() {
 
 function renderScannerFields(text) {
   const fields = extractScannerFields(text);
-  const renderGroup = (key, title, values) => `<section class="scanner-field-group"><header><h3>${title}</h3><span>${values.length}</span></header>${values.length ? `<div class="scanner-field-grid">${values.map((value, index) => `<button class="scanner-field-chip" type="button" data-copy-scanner-field="${key}" data-copy-index="${index}" title="نسخ ${title}"><span>${key === 'dates' ? `تاريخ ${index + 1}` : `رقم ${index + 1}`}</span><strong dir="ltr">${escapeHtml(value)}</strong><small>${icon('copy', 12)} نسخ</small></button>`).join('')}</div>` : `<p class="scanner-fields-empty">لم يتم العثور على ${key === 'dates' ? 'تواريخ' : 'أرقام'}.</p>`}</section>`;
-  return `<section class="scanner-fields" data-scanner-fields><header class="scanner-fields-heading"><div><p class="eyebrow">استخراج تلقائي</p><h3>التواريخ والأرقام</h3></div><span>تُحدّث مع تعديل النص</span></header><div class="scanner-field-groups">${renderGroup('dates', 'التواريخ', fields.dates)}${renderGroup('numbers', 'الأرقام', fields.numbers)}</div></section>`;
+  const cards = [
+    ['identityNumber', 'رقم الهوية'],
+    ['birthDate', 'تاريخ الميلاد'],
+    ['serialNumber', 'الرقم التسلسلي']
+  ];
+  return `<section class="scanner-fields" data-scanner-fields><header class="scanner-fields-heading"><div><p class="eyebrow">استخراج تلقائي</p><h3>بيانات الهوية</h3></div><span>تُحدّث مع تعديل النص</span></header><div class="scanner-field-groups">${cards.map(([key, title]) => `<button class="scanner-field-chip" type="button" data-copy-scanner-field="${key}" title="نسخ ${title}" ${fields[key] ? '' : 'disabled'}><span>${title}</span><strong dir="ltr">${escapeHtml(fields[key] || 'لم يتم العثور عليها')}</strong><small>${fields[key] ? `${icon('copy', 12)} نسخ` : 'راجع النص وعدّله يدويًا'}</small></button>`).join('')}</div></section>`;
 }
 
 function renderScanner() {
@@ -1284,12 +1288,13 @@ function bindViewEvents() {
     if (!button) return;
     const record = scannerDocuments.find((item) => item.id === selectedScannerDocumentId);
     const fields = extractScannerFields(record?.text || '');
-    const value = fields[button.dataset.copyScannerField]?.[Number(button.dataset.copyIndex)];
+    const value = fields[button.dataset.copyScannerField];
     if (!value) return;
     try {
       if (window.desktopBridge?.copyText) await window.desktopBridge.copyText(value);
       else await navigator.clipboard.writeText(value);
-      showToast(`تم نسخ ${button.dataset.copyScannerField === 'dates' ? 'التاريخ' : 'الرقم'}.`);
+      const labels = { identityNumber: 'رقم الهوية', birthDate: 'تاريخ الميلاد', serialNumber: 'الرقم التسلسلي' };
+      showToast(`تم نسخ ${labels[button.dataset.copyScannerField] || 'القيمة'}.`);
     } catch { showToast('تعذر نسخ القيمة إلى الحافظة.', 'error'); }
   });
   document.querySelector('#scannerOcrLanguage')?.addEventListener('change', (event) => {

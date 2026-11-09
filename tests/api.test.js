@@ -673,7 +673,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const workflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.15');
+  assert.equal(packageJson.version, '0.1.16');
   assert.deepEqual(packageJson.build.publish[0], { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
@@ -707,6 +707,10 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /autoUpdater\.autoInstallOnAppQuit = true/);
   assert.match(electronMain, /checkForUpdates\(\)/);
   assert.match(electronMain, /quitAndInstall/);
+  assert.match(electronMain, /يجب تثبيت آخر تحديث للاستمرار في استخدام البرنامج/);
+  assert.match(electronMain, /buttons: \['موافق — تثبيت التحديث الآن'\]/);
+  assert.match(electronMain, /response === 0 \|\| response === -1/);
+  assert.match(workflow, /v0\.1\.16/);
   assert.match(workflow, /latest\.yml/);
   assert.match(workflow, /\.blockmap/);
   assert.match(appSource, /data-nav="debts"/);
@@ -779,10 +783,18 @@ test('OCR keeps detected line order, cleans bidi artifacts and converts Arabic d
   assert.equal(normalizeOcrText(input), 'رقم الهوية: 1234567890\nتاريخ الميلاد: 1402 / 05 / 21\n\nالاسم: محمد أحمد');
 });
 
-test('identity OCR separates dates and number groups and normalizes Arabic digits', () => {
-  const fields = extractScannerFields('رقم الهوية: ١٢٣٤٥٦٧٨٩٠\nتاريخ الميلاد: ١٩٩٠/٠٥/٢١\nExpiry: 21 October 2028\nPhone: +966 55 123 4567');
-  assert.deepEqual(fields.dates, ['1990/05/21', '21 October 2028']);
-  assert.deepEqual(fields.numbers, ['1234567890', '+966 55 123 4567']);
+test('identity OCR extracts only ID number, birth date and labeled serial in Arabic and English', () => {
+  const fields = extractScannerFields('رقم الهوية: ١٢٣٤٥٦٧٨٩٠\nتاريخ الميلاد: ١٩٩٠/٠٥/٢١\nالرقم التسلسلي: ٨٧٦٥٤٣٢١\nتاريخ الانتهاء: ٢٠٣٠/٠٥/٢١\nPhone: +966 55 123 4567');
+  assert.deepEqual(fields, { identityNumber: '1234567890', birthDate: '1990/05/21', serialNumber: '87654321' });
+  assert.deepEqual(extractScannerFields('National ID: 2123456789\nDate of Birth: 12/03/1994\nSerial Number: 99887766\nExpiry: 12/03/2030'), {
+    identityNumber: '2123456789', birthDate: '12/03/1994', serialNumber: '99887766'
+  });
+});
+
+test('identity OCR does not mistake phone numbers or expiry dates for requested identity fields', () => {
+  assert.deepEqual(extractScannerFields('Phone: +966 55 123 4567\nتاريخ الانتهاء: 2030/04/15'), {
+    identityNumber: '', birthDate: '', serialNumber: ''
+  });
 });
 
 test('scanner OCR falls back to original BMP bytes when Sharp does not support the scan format', async () => {
@@ -822,6 +834,20 @@ test('scanner OCR image preparation enhances contrast locally and returns a read
     const stats = await sharp(output).stats();
     assert.ok(Math.abs(stats.channels[0].mean - stats.channels[1].mean) < 0.5);
     assert.ok(Math.abs(stats.channels[1].mean - stats.channels[2].mean) < 0.5);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('scanner OCR preparation downsizes high-resolution scans to a 2200-pixel maximum side', async () => {
+  const { prepareScannerOcrImage } = require('../electron/scanner-formats.cjs');
+  const directory = await mkdtemp(join(tmpdir(), 'servicehub-ocr-large-'));
+  try {
+    const input = join(directory, 'large-scan.jpg');
+    await sharp({ create: { width: 3200, height: 4800, channels: 3, background: '#eeeeee' } }).jpeg().toFile(input);
+    const dataUrl = await prepareScannerOcrImage(input);
+    const metadata = await sharp(Buffer.from(dataUrl.split(',')[1], 'base64')).metadata();
+    assert.equal(Math.max(metadata.width, metadata.height), 2200);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

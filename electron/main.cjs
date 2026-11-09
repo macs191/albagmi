@@ -363,15 +363,14 @@ function configureAutoUpdates() {
     const version = String(info?.version || 'الجديد');
     const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
     dialog.showMessageBox(owner, {
-      type: 'info',
-      title: 'تحديث Service Hub جاهز',
-      message: `تم تنزيل الإصدار ${version}. هل تريد إعادة تشغيل البرنامج وتثبيت التحديث الآن؟`,
-      buttons: ['إعادة التشغيل والتحديث', 'لاحقًا'],
+      type: 'warning',
+      title: 'يجب تثبيت تحديث Service Hub',
+      message: `تم تنزيل الإصدار ${version}. يجب تثبيت آخر تحديث للاستمرار في استخدام البرنامج. سيُغلق البرنامج الآن ويُعاد تشغيله لتثبيت التحديث.`,
+      buttons: ['موافق — تثبيت التحديث الآن'],
       defaultId: 0,
-      cancelId: 1,
       noLink: true
     }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall(false, true);
+      if (response === 0 || response === -1) autoUpdater.quitAndInstall(false, true);
     }).catch((error) => console.warn('Could not show update prompt:', error?.message || error));
   });
   setTimeout(() => {

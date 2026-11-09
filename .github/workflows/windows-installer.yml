@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.15
+      - v0.1.16
 
 permissions:
   contents: write
@@ -40,9 +40,9 @@ jobs:
       - name: Publish installer on GitHub Release
         shell: pwsh
         run: |
-          $installer = Get-Item "release/ServiceHub-Desktop-0.1.15-Setup.exe"
+          $installer = Get-Item "release/ServiceHub-Desktop-0.1.16-Setup.exe"
           $blockmap = Get-Item "$($installer.FullName).blockmap"
           $latest = Get-Item "release/latest.yml"
-          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.15" --notes "إصلاح OCR للماسح: عند عدم دعم صيغة صورة WIA للتحسين، يحاول التعرف من الصورة الأصلية مباشرة. يدعم اختيار العربية والإنجليزية أو كليهما، ويعرض الأرقام والتواريخ في بطاقات منفصلة قابلة للنسخ. يتضمن تحسينات الإصدار السابق والتحديث التلقائي." --latest --repo $env:GITHUB_REPOSITORY
+          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.16" --notes "إصلاح خطأ OCR في صور الماسح عالية الدقة، وتحسين استخراج رقم الهوية وتاريخ الميلاد والرقم التسلسلي في بطاقات منفصلة. عند تنزيل تحديث جديد يعرض البرنامج رسالة تطلب تثبيته، ثم يعيد التشغيل لإكمال التثبيت دون خيار التأجيل." --latest --repo $env:GITHUB_REPOSITORY
         env:
           GH_TOKEN: ${{ github.token }}
