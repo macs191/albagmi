@@ -21,10 +21,10 @@ import { aggregateDailyReport, aggregateMonthlyReport, aggregateRangeReport, ren
 import { buildOfficeWhatsappUrl, normalizeWhatsappNumber, publicServiceCount, renderPublicOfficePage } from '../src/public-page.js';
 import { bankBalance, bankLedger, bankMovementTotals, filterBankLedger } from '../src/banks.js';
 import { renderPaymentMethodFields } from '../src/bank-view.js';
-import { normalizeOcrText } from '../src/scanner-text.js';
+import { extractScannerFields, normalizeOcrText } from '../src/scanner-text.js';
 
 const require = createRequire(import.meta.url);
-const { exportScannerImage } = require('../electron/scanner-formats.cjs');
+const { exportScannerImage, prepareScannerOcrInput } = require('../electron/scanner-formats.cjs');
 const { PDFDocument } = require('pdf-lib');
 
 const ENV_KEYS = [
@@ -673,29 +673,36 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const workflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.14');
+  assert.equal(packageJson.version, '0.1.15');
   assert.deepEqual(packageJson.build.publish[0], { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
   assert.match(appSource, /data-nav="scanner"/);
   assert.match(appSource, /data-save-scan/);
   assert.match(appSource, /data-print-scan/);
-  assert.match(appSource, /recognizeScannerText\(id\)/);
+  assert.match(appSource, /recognizeScannerText\(id, scannerOcrLanguage\)/);
   assert.doesNotMatch(appSource, /createWorker\(|cdn\.jsdelivr\.net|tessdata\.projectnaptha/);
   assert.match(appSource, /function openGoogleSearch\(query\)/);
   assert.match(appSource, /id="googleSearchButton"/);
   assert.match(appSource, /event\.key === 'Enter'.*openGoogleSearch/s);
   assert.match(electronMain, /scanner:recognize-text/);
-  assert.match(electronMain, /createWorker\('ara\+eng'/);
+  assert.match(electronMain, /createWorker\(language/);
+  assert.match(electronMain, /supportedLanguages = new Set\(\['ara\+eng', 'ara', 'eng'\]\)/);
   assert.match(electronMain, /langPath: path\.join\(__dirname, '\.\.', 'dist', 'tesseract', 'tessdata'\)/);
   assert.match(electronMain, /cacheMethod: 'none'/);
+  assert.match(electronMain, /prepareScannerOcrInput\(file\)/);
+  assert.match(electronMain, /using original scan/);
   assert.match(preload, /recognizeScannerText/);
   assert.match(preload, /onScannerOcrProgress/);
   const ocrAssetsScript = await readFile(new URL('../scripts/prepare-ocr-assets.mjs', import.meta.url), 'utf8');
   assert.match(packageJson.scripts.build, /prepare:ocr-assets/);
   assert.match(packageJson.scripts['package:win'], /prepare:ocr-assets/);
   assert.match(ocrAssetsScript, /@tesseract\.js-data\/\$\{lang\}\/4\.0\.0_best_int/);
-  assert.match(electronMain, /prepareScannerOcrImage/);
+  assert.match(electronMain, /scanner:recognize-text/);
+  assert.match(appSource, /documentRecord\.text = normalizeOcrText\(result\.text\)/);
+  assert.match(appSource, /function renderScannerFields\(text\)/);
+  assert.match(appSource, /data-copy-scanner-field/);
+  assert.match(appSource, /scannerOcrLanguage/);
   assert.match(electronMain, /autoUpdater\.autoDownload = true/);
   assert.match(electronMain, /autoUpdater\.autoInstallOnAppQuit = true/);
   assert.match(electronMain, /checkForUpdates\(\)/);
@@ -770,6 +777,29 @@ test('scanner export creates valid JPEG, PNG, BMP, TIFF, WebP and single-page PD
 test('OCR keeps detected line order, cleans bidi artifacts and converts Arabic digits to English', () => {
   const input = '\u200fرقم الهوية: ١٢٣٤٥٦٧٨٩٠\r\nتاريخ الميلاد: ۱۴۰۲ / ٠٥ / ٢١\n\n\nالاسم: محمد   أحمد';
   assert.equal(normalizeOcrText(input), 'رقم الهوية: 1234567890\nتاريخ الميلاد: 1402 / 05 / 21\n\nالاسم: محمد أحمد');
+});
+
+test('identity OCR separates dates and number groups and normalizes Arabic digits', () => {
+  const fields = extractScannerFields('رقم الهوية: ١٢٣٤٥٦٧٨٩٠\nتاريخ الميلاد: ١٩٩٠/٠٥/٢١\nExpiry: 21 October 2028\nPhone: +966 55 123 4567');
+  assert.deepEqual(fields.dates, ['1990/05/21', '21 October 2028']);
+  assert.deepEqual(fields.numbers, ['1234567890', '+966 55 123 4567']);
+});
+
+test('scanner OCR falls back to original BMP bytes when Sharp does not support the scan format', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'servicehub-ocr-fallback-'));
+  try {
+    const jpeg = join(directory, 'source.jpg');
+    const bmp = join(directory, 'scanner-output.bmp');
+    const pixels = Buffer.alloc(16 * 16 * 3, 210);
+    await sharp(pixels, { raw: { width: 16, height: 16, channels: 3 } }).jpeg().toFile(jpeg);
+    await exportScannerImage(jpeg, bmp, 'bmp');
+    const result = await prepareScannerOcrInput(bmp);
+    assert.equal(result.preprocessed, false);
+    assert.ok(result.warning.length > 0);
+    assert.deepEqual(result.buffer, await readFile(bmp));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('scanner OCR image preparation enhances contrast locally and returns a readable PNG data URL', async () => {

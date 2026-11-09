@@ -4,7 +4,7 @@ import './public-page.css';
 import { renderPublicOfficePage, renderPublicPageLoading, renderPublicPageUnavailable } from './public-page.js';
 import { bankBalance } from './banks.js';
 import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
-import { normalizeOcrText } from './scanner-text.js';
+import { extractScannerFields, normalizeOcrText } from './scanner-text.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -56,6 +56,7 @@ let selectedScannerDocumentId = scannerDocuments[0]?.id || null;
 let scannerPreviewUrl = '';
 let scannerBusy = false;
 let scannerOcrStatus = '';
+let scannerOcrLanguage = 'ara+eng';
 let clientPasswordRequest = null;
 let adminPasswordRequests = [];
 let searchTerm = '';
@@ -328,12 +329,14 @@ async function extractScannerText(id) {
     if (status) status.textContent = scannerOcrStatus;
   });
   try {
-    const result = await window.desktopBridge.recognizeScannerText(id);
+    const result = await window.desktopBridge.recognizeScannerText(id, scannerOcrLanguage);
     const documentRecord = scannerDocuments.find((item) => item.id === id);
     if (documentRecord) {
-      documentRecord.text = normalizeOcrText(result.data?.text).slice(0, 100000);
+      documentRecord.text = normalizeOcrText(result.text).slice(0, 100000);
       saveScannerDocuments();
-      scannerOcrStatus = documentRecord.text ? 'اكتمل استخراج النص. راجعه وصححه قبل النسخ.' : 'لم يظهر نص واضح؛ يمكنك كتابة النص يدويًا أو إعادة المسح.';
+      const confidence = Number.isFinite(result.confidence) && result.confidence > 0 ? ` · الثقة التقريبية ${Math.round(result.confidence)}٪` : '';
+      const sourceHint = result.preprocessed === false ? ' · تمت القراءة من الصورة الأصلية' : '';
+      scannerOcrStatus = documentRecord.text ? `اكتمل استخراج النص. راجعه وصححه قبل النسخ.${confidence}${sourceHint}` : 'لم يظهر نص واضح؛ جرّب لغة أخرى أو ارفع دقة المسح إلى 300 DPI ثم أعد المحاولة.';
     }
   } catch (error) {
     console.error('[Service Hub OCR] Failed to initialize or recognize text:', error);
@@ -953,13 +956,19 @@ function renderNotepad() {
   return `<section class="notepad-view"><div class="view-title-row"><div><p class="eyebrow">مساحة خاصة على هذا الجهاز</p><h1>Notepad</h1><p class="page-subtitle">اكتب أو الصق بيانات مؤقتة؛ تُحفظ تلقائيًا على هذا الجهاز ولا تُرسل إلى Supabase.</p></div><button class="secondary-btn" id="clearNotepad" type="button">مسح المفكرة</button></div><label class="notepad-paper"><span class="sr-only">ملاحظات مؤقتة</span><textarea id="notepadText" spellcheck="false" placeholder="اكتب أو الصق بيانات العميل هنا…">${escapeHtml(notepadText)}</textarea></label><div class="notepad-footer"><span id="notepadSaveStatus" aria-live="polite">تم الحفظ على هذا الجهاز</span><span>لا تُمسح الملاحظات عند تسجيل الخروج؛ امسحها يدويًا عند الانتهاء.</span></div></section>`;
 }
 
+function renderScannerFields(text) {
+  const fields = extractScannerFields(text);
+  const renderGroup = (key, title, values) => `<section class="scanner-field-group"><header><h3>${title}</h3><span>${values.length}</span></header>${values.length ? `<div class="scanner-field-grid">${values.map((value, index) => `<button class="scanner-field-chip" type="button" data-copy-scanner-field="${key}" data-copy-index="${index}" title="نسخ ${title}"><span>${key === 'dates' ? `تاريخ ${index + 1}` : `رقم ${index + 1}`}</span><strong dir="ltr">${escapeHtml(value)}</strong><small>${icon('copy', 12)} نسخ</small></button>`).join('')}</div>` : `<p class="scanner-fields-empty">لم يتم العثور على ${key === 'dates' ? 'تواريخ' : 'أرقام'}.</p>`}</section>`;
+  return `<section class="scanner-fields" data-scanner-fields><header class="scanner-fields-heading"><div><p class="eyebrow">استخراج تلقائي</p><h3>التواريخ والأرقام</h3></div><span>تُحدّث مع تعديل النص</span></header><div class="scanner-field-groups">${renderGroup('dates', 'التواريخ', fields.dates)}${renderGroup('numbers', 'الأرقام', fields.numbers)}</div></section>`;
+}
+
 function renderScanner() {
   const selected = scannerDocuments.find((item) => item.id === selectedScannerDocumentId) || null;
   const scanList = scannerDocuments.map((item) => `<button class="scanner-history-item ${item.id === selected?.id ? 'active' : ''}" type="button" data-select-scan="${escapeHtml(item.id)}"><span class="scanner-history-icon">${icon('image', 18)}</span><span class="scanner-history-copy"><strong>${escapeHtml(item.filename || 'مستند ممسوح')}</strong><small>${escapeHtml(formatDateTime(item.createdAt))}</small></span><span class="scanner-history-arrow">‹</span></button>`).join('');
   const preview = selected && scannerPreviewUrl ? `<img class="scanner-document-image" src="${escapeHtml(scannerPreviewUrl)}" alt="معاينة ${escapeHtml(selected.filename)}">` : `<div class="scanner-preview-placeholder">${icon('scanner', 34)}<strong>${selected ? 'جارٍ تحميل المعاينة…' : 'ستظهر معاينة المستند هنا'}</strong><small>ضع المستند على الماسح ثم اختر «مسح مستند»</small></div>`;
-  const detail = selected ? `<section class="scanner-workspace"><div class="scanner-preview-card"><div class="scanner-preview-toolbar"><div><strong>معاينة المستند</strong><small>${escapeHtml(selected.filename || '')}</small></div><button class="icon-btn danger" type="button" data-delete-scan="${escapeHtml(selected.id)}" aria-label="حذف المستند" title="حذف المستند">${icon('trash', 17)}</button></div><div class="scanner-preview-canvas">${preview}</div></div><div class="scanner-text-card"><header class="scanner-text-heading"><div><p class="eyebrow">التعرف الضوئي على الحروف</p><h2>النص المستخرج</h2></div><button class="secondary-btn scanner-copy-btn" type="button" data-copy-scan-text ${selected.text && !scannerBusy ? '' : 'disabled'}>${icon('copy', 16)} نسخ النص</button></header><p id="scannerOcrStatus" class="scanner-ocr-status" aria-live="polite">${escapeHtml(scannerOcrStatus || (selected.text ? 'يمكنك مراجعة النص وتصحيحه قبل نسخه.' : 'جارٍ تجهيز النص…'))}</p><textarea id="scannerExtractedText" class="scanner-extracted-text" dir="auto" spellcheck="false" maxlength="100000" ${scannerBusy ? 'disabled' : ''} placeholder="سيظهر هنا النص الذي تم التعرف عليه، ويمكنك تعديله يدويًا…">${escapeHtml(selected.text || '')}</textarea><footer class="scanner-text-footer"><span id="scannerSaveStatus" aria-live="polite">محفوظ على هذا الجهاز فقط</span><button class="ghost-btn" type="button" data-rerun-ocr ${scannerBusy ? 'disabled' : ''}>${icon('refresh', 15)} إعادة استخراج النص</button></footer></div></section>` : `<section class="scanner-empty-panel"><div class="scanner-empty-icon">${icon('scanner', 38)}</div><h2>لا توجد مستندات ممسوحة</h2><p>ابدأ مسح بطاقة الهوية أو أي مستند. ستظهر صورته هنا، ويمكنك حفظها أو طباعتها بصيغ متعددة.</p></section>`;
+  const detail = selected ? `<section class="scanner-workspace"><div class="scanner-preview-card"><div class="scanner-preview-toolbar"><div><strong>معاينة المستند</strong><small>${escapeHtml(selected.filename || '')}</small></div><button class="icon-btn danger" type="button" data-delete-scan="${escapeHtml(selected.id)}" aria-label="حذف المستند" title="حذف المستند">${icon('trash', 17)}</button></div><div class="scanner-preview-canvas">${preview}</div></div><div class="scanner-text-card"><header class="scanner-text-heading"><div><p class="eyebrow">التعرف الضوئي على الحروف</p><h2>النص المستخرج</h2></div><button class="secondary-btn scanner-copy-btn" type="button" data-copy-scan-text ${selected.text && !scannerBusy ? '' : 'disabled'}>${icon('copy', 16)} نسخ النص</button></header><p id="scannerOcrStatus" class="scanner-ocr-status" aria-live="polite">${escapeHtml(scannerOcrStatus || (selected.text ? 'يمكنك مراجعة النص وتصحيحه قبل نسخه.' : 'جارٍ تجهيز النص…'))}</p><textarea id="scannerExtractedText" class="scanner-extracted-text" dir="auto" spellcheck="false" maxlength="100000" ${scannerBusy ? 'disabled' : ''} placeholder="سيظهر هنا النص الذي تم التعرف عليه، ويمكنك تعديله يدويًا…">${escapeHtml(selected.text || '')}</textarea>${renderScannerFields(selected.text || '')}<footer class="scanner-text-footer"><span id="scannerSaveStatus" aria-live="polite">محفوظ على هذا الجهاز فقط</span><button class="ghost-btn" type="button" data-rerun-ocr ${scannerBusy ? 'disabled' : ''}>${icon('refresh', 15)} إعادة استخراج النص</button></footer></div></section>` : `<section class="scanner-empty-panel"><div class="scanner-empty-icon">${icon('scanner', 38)}</div><h2>لا توجد مستندات ممسوحة</h2><p>ابدأ مسح بطاقة الهوية أو أي مستند. ستظهر صورته هنا، ويمكنك حفظها أو طباعتها بصيغ متعددة.</p></section>`;
   const formats = [['pdf', 'PDF'], ['jpeg', 'JPG / JPEG'], ['png', 'PNG'], ['bmp', 'BMP'], ['tiff', 'TIFF'], ['webp', 'WebP']];
-  return `<section class="scanner-view"><header class="view-title-row scanner-title-row"><div><p class="eyebrow">محفوظ محليًا — لا يتم رفع الصور</p><h1>الماسح الضوئي</h1><p class="page-subtitle">امسح مستندًا، راجع النص، ثم احفظه بصيغ الصور الشائعة أو PDF أو اطبعه.</p></div><div class="scanner-actions"><label class="scanner-format-picker"><span>صيغة الحفظ</span><select id="scannerExportFormat">${formats.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button class="secondary-btn" type="button" data-save-scan ${selected ? '' : 'disabled'}>${icon('download', 16)} حفظ باسم</button><button class="secondary-btn" type="button" data-print-scan ${selected ? '' : 'disabled'}>${icon('receipt', 16)} طباعة</button><button class="primary-btn" type="button" data-start-scan ${scannerBusy ? 'disabled' : ''}>${icon('scanner', 18)} ${scannerBusy ? 'جارٍ المعالجة…' : 'مسح مستند'}</button></div></header><div class="scanner-privacy-note"><span>${icon('lock', 16)}</span><p>لأفضل قراءة للهوية، ضعها مستقيمة واختر دقة 300 DPI أو أعلى من نافذة الماسح. تُحسّن الصورة محليًا قبل OCR، ولا تُرفع صورة الهوية إلى خادم.</p></div><div class="scanner-layout"><aside class="scanner-history-panel"><div class="scanner-history-heading"><div><p class="eyebrow">سجل محلي</p><h2>المستندات</h2></div><span class="record-count">${scannerDocuments.length}</span></div>${scanList || '<div class="scanner-history-empty">لا يوجد سجل بعد</div>'}</aside>${detail}</div></section>`;
+  return `<section class="scanner-view"><header class="view-title-row scanner-title-row"><div><p class="eyebrow">محفوظ محليًا — لا يتم رفع الصور</p><h1>الماسح الضوئي</h1><p class="page-subtitle">امسح مستندًا، راجع النص، ثم احفظه بصيغ الصور الشائعة أو PDF أو اطبعه.</p></div><div class="scanner-actions"><label class="scanner-language-picker"><span>لغة القراءة</span><select id="scannerOcrLanguage"><option value="ara+eng" ${scannerOcrLanguage === 'ara+eng' ? 'selected' : ''}>العربية والإنجليزية</option><option value="ara" ${scannerOcrLanguage === 'ara' ? 'selected' : ''}>العربية فقط</option><option value="eng" ${scannerOcrLanguage === 'eng' ? 'selected' : ''}>الإنجليزية فقط</option></select></label><label class="scanner-format-picker"><span>صيغة الحفظ</span><select id="scannerExportFormat">${formats.map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}</select></label><button class="secondary-btn" type="button" data-save-scan ${selected ? '' : 'disabled'}>${icon('download', 16)} حفظ باسم</button><button class="secondary-btn" type="button" data-print-scan ${selected ? '' : 'disabled'}>${icon('receipt', 16)} طباعة</button><button class="primary-btn" type="button" data-start-scan ${scannerBusy ? 'disabled' : ''}>${icon('scanner', 18)} ${scannerBusy ? 'جارٍ المعالجة…' : 'مسح مستند'}</button></div></header><div class="scanner-privacy-note"><span>${icon('lock', 16)}</span><p>اختر العربية والإنجليزية للبطاقات المختلطة، أو لغة واحدة إذا كان المستند أحادي اللغة. اختر 300 DPI أو أعلى؛ عند رفض صيغة الصورة للتحسين، يحاول البرنامج قراءة الملف الأصلي مباشرةً.</p></div><div class="scanner-layout"><aside class="scanner-history-panel"><div class="scanner-history-heading"><div><p class="eyebrow">سجل محلي</p><h2>المستندات</h2></div><span class="record-count">${scannerDocuments.length}</span></div>${scanList || '<div class="scanner-history-empty">لا يوجد سجل بعد</div>'}</aside>${detail}</div></section>`;
 }
 
 function renderBanks() {
@@ -1266,8 +1275,26 @@ function bindViewEvents() {
     if (status) status.textContent = 'تم الحفظ محليًا';
     const copyButton = document.querySelector('[data-copy-scan-text]');
     if (copyButton) copyButton.disabled = !record.text;
+    const fieldsPanel = document.querySelector('[data-scanner-fields]');
+    if (fieldsPanel) fieldsPanel.outerHTML = renderScannerFields(record.text);
   });
   document.querySelector('[data-copy-scan-text]')?.addEventListener('click', copyScannerText);
+  document.querySelector('.scanner-text-card')?.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-copy-scanner-field]');
+    if (!button) return;
+    const record = scannerDocuments.find((item) => item.id === selectedScannerDocumentId);
+    const fields = extractScannerFields(record?.text || '');
+    const value = fields[button.dataset.copyScannerField]?.[Number(button.dataset.copyIndex)];
+    if (!value) return;
+    try {
+      if (window.desktopBridge?.copyText) await window.desktopBridge.copyText(value);
+      else await navigator.clipboard.writeText(value);
+      showToast(`تم نسخ ${button.dataset.copyScannerField === 'dates' ? 'التاريخ' : 'الرقم'}.`);
+    } catch { showToast('تعذر نسخ القيمة إلى الحافظة.', 'error'); }
+  });
+  document.querySelector('#scannerOcrLanguage')?.addEventListener('change', (event) => {
+    scannerOcrLanguage = ['ara+eng', 'ara', 'eng'].includes(event.currentTarget.value) ? event.currentTarget.value : 'ara+eng';
+  });
   document.querySelectorAll('[data-delete-scan]').forEach((button) => button.addEventListener('click', () => deleteScannerDocument(button.dataset.deleteScan)));
   document.querySelector('[data-rerun-ocr]')?.addEventListener('click', async () => {
     const record = scannerDocuments.find((item) => item.id === selectedScannerDocumentId);

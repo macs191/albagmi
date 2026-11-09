@@ -7,7 +7,7 @@ const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const { createWorker } = require('tesseract.js');
 const { autoUpdater } = require('electron-updater');
-const { exportScannerImage, prepareScannerOcrImage } = require('./scanner-formats.cjs');
+const { exportScannerImage, prepareScannerOcrInput } = require('./scanner-formats.cjs');
 
 let mainWindow;
 const siteViews = new Map();
@@ -128,15 +128,17 @@ function readScannerImage(id) {
   return `data:image/jpeg;base64,${fs.readFileSync(file).toString('base64')}`;
 }
 
-async function recognizeScannerText(id, event) {
+async function recognizeScannerText(id, language, event) {
+  const supportedLanguages = new Set(['ara+eng', 'ara', 'eng']);
+  if (!supportedLanguages.has(language)) throw new Error('لغة OCR المختارة غير مدعومة.');
   const file = scannerImagePath(id);
   const stats = fs.statSync(file);
   if (!stats.isFile() || stats.size > 35 * 1024 * 1024) throw new Error('تعذر قراءة ملف المسح أو تجاوز حجمه الحد المسموح.');
-  const imageData = await prepareScannerOcrImage(file);
-  const imageBuffer = Buffer.from(imageData.slice(imageData.indexOf(',') + 1), 'base64');
   let worker;
   try {
-    worker = await createWorker('ara+eng', 1, {
+    const preparedImage = await prepareScannerOcrInput(file);
+    if (!preparedImage.preprocessed) console.warn('[Service Hub OCR] Image preprocessing skipped; using original scan:', preparedImage.warning);
+    worker = await createWorker(language, 1, {
       langPath: path.join(__dirname, '..', 'dist', 'tesseract', 'tessdata'),
       gzip: true,
       cacheMethod: 'none',
@@ -150,8 +152,8 @@ async function recognizeScannerText(id, event) {
       }
     });
     await worker.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
-    const result = await worker.recognize(imageBuffer);
-    return { text: String(result.data?.text || '') };
+    const result = await worker.recognize(preparedImage.buffer);
+    return { text: String(result.data?.text || ''), confidence: Number(result.data?.confidence) || 0, preprocessed: preparedImage.preprocessed };
   } catch (error) {
     console.error('[Service Hub OCR]', error);
     throw new Error(`تعذر تشغيل محرك OCR المحلي: ${String(error?.message || error).slice(0, 500)}`);
@@ -384,7 +386,7 @@ app.whenReady().then(() => {
   ipcMain.handle('clear-remembered-login', () => clearRememberedLogin());
   ipcMain.handle('scanner:acquire', () => acquireScannerImage());
   ipcMain.handle('scanner:read-image', (_event, id) => readScannerImage(id));
-  ipcMain.handle('scanner:recognize-text', (event, id) => recognizeScannerText(id, event));
+  ipcMain.handle('scanner:recognize-text', (event, id, language) => recognizeScannerText(id, language, event));
   ipcMain.handle('scanner:delete-image', (_event, id) => deleteScannerImage(id));
   ipcMain.handle('scanner:copy-text', (_event, text) => copyText(text));
   ipcMain.handle('scanner:export', (_event, request) => exportScannerDocument(request));

@@ -73,4 +73,15 @@ async function prepareScannerOcrImage(inputPath) {
   return `data:image/png;base64,${image.toString('base64')}`;
 }
 
-module.exports = { exportScannerImage, prepareScannerOcrImage };
+async function prepareScannerOcrInput(inputPath) {
+  try {
+    const dataUrl = await prepareScannerOcrImage(inputPath);
+    return { buffer: Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'), preprocessed: true, warning: '' };
+  } catch (error) {
+    const buffer = fs.readFileSync(inputPath);
+    if (!buffer.length) throw error;
+    return { buffer, preprocessed: false, warning: String(error?.message || error) };
+  }
+}
+
+module.exports = { exportScannerImage, prepareScannerOcrImage, prepareScannerOcrInput };
