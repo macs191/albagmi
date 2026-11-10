@@ -5,6 +5,8 @@ const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
+const { bridgeNodeWorkerOnError } = require('./tesseract-worker-compat.cjs');
+bridgeNodeWorkerOnError();
 const { createWorker } = require('tesseract.js');
 const { autoUpdater } = require('electron-updater');
 const { exportScannerImage, prepareScannerOcrInput } = require('./scanner-formats.cjs');
@@ -128,6 +130,44 @@ function readScannerImage(id) {
   return `data:image/jpeg;base64,${fs.readFileSync(file).toString('base64')}`;
 }
 
+async function resizeScannerImageWithWindows(inputPath) {
+  if (process.platform !== 'win32') throw new Error('تعذر تجهيز صيغة صورة الماسح على هذا النظام.');
+  const outputPath = path.join(app.getPath('temp'), `servicehub-ocr-${crypto.randomUUID()}.png`);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    'Add-Type -AssemblyName System.Drawing',
+    '$source = $null; $bitmap = $null; $graphics = $null',
+    'try {',
+    '  $source = [System.Drawing.Image]::FromFile($env:SERVICEHUB_OCR_INPUT)',
+    '  if ($source.Width -lt 1 -or $source.Height -lt 1 -or $source.Width -gt 50000 -or $source.Height -gt 50000) { throw "صورة الماسح بأبعاد غير آمنة." }',
+    '  $scale = [Math]::Min(1.0, 2200.0 / [Math]::Max($source.Width, $source.Height))',
+    '  $width = [Math]::Max(1, [int][Math]::Round($source.Width * $scale))',
+    '  $height = [Math]::Max(1, [int][Math]::Round($source.Height * $scale))',
+    '  $bitmap = [System.Drawing.Bitmap]::new($width, $height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)',
+    '  $bitmap.SetResolution(300, 300)',
+    '  $graphics = [System.Drawing.Graphics]::FromImage($bitmap)',
+    '  $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic',
+    '  $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality',
+    '  $graphics.DrawImage($source, 0, 0, $width, $height)',
+    '  $bitmap.Save($env:SERVICEHUB_OCR_OUTPUT, [System.Drawing.Imaging.ImageFormat]::Png)',
+    '}',
+    'finally { if ($graphics) { $graphics.Dispose() }; if ($bitmap) { $bitmap.Dispose() }; if ($source) { $source.Dispose() } }'
+  ].join('\n');
+  try {
+    await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+      windowsHide: true,
+      timeout: 60 * 1000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, SERVICEHUB_OCR_INPUT: inputPath, SERVICEHUB_OCR_OUTPUT: outputPath }
+    });
+    const stats = fs.statSync(outputPath);
+    if (!stats.isFile() || stats.size < 100 || stats.size > 35 * 1024 * 1024) throw new Error('تعذر تجهيز صورة آمنة لمحرك OCR.');
+    return fs.readFileSync(outputPath);
+  } finally {
+    try { fs.unlinkSync(outputPath); } catch { /* output may not have been created */ }
+  }
+}
+
 async function recognizeScannerText(id, language, event) {
   const supportedLanguages = new Set(['ara+eng', 'ara', 'eng']);
   if (!supportedLanguages.has(language)) throw new Error('لغة OCR المختارة غير مدعومة.');
@@ -135,9 +175,10 @@ async function recognizeScannerText(id, language, event) {
   const stats = fs.statSync(file);
   if (!stats.isFile() || stats.size > 35 * 1024 * 1024) throw new Error('تعذر قراءة ملف المسح أو تجاوز حجمه الحد المسموح.');
   let worker;
+  let workerErrorHandler;
   try {
-    const preparedImage = await prepareScannerOcrInput(file);
-    if (!preparedImage.preprocessed) console.warn('[Service Hub OCR] Image preprocessing skipped; using original scan:', preparedImage.warning);
+    const preparedImage = await prepareScannerOcrInput(file, resizeScannerImageWithWindows);
+    if (!preparedImage.preprocessed) throw new Error('تعذر تصغير صورة الماسح قبل OCR.');
     worker = await createWorker(language, 1, {
       langPath: path.join(__dirname, '..', 'dist', 'tesseract', 'tessdata'),
       gzip: true,
@@ -151,13 +192,21 @@ async function recognizeScannerText(id, language, event) {
         });
       }
     });
+    const workerFailure = new Promise((_, reject) => {
+      workerErrorHandler = (error) => reject(error);
+      worker.worker.once('error', workerErrorHandler);
+    });
     await worker.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
-    const result = await worker.recognize(preparedImage.buffer);
+    const result = await Promise.race([worker.recognize(preparedImage.buffer), workerFailure]);
     return { text: String(result.data?.text || ''), confidence: Number(result.data?.confidence) || 0, preprocessed: preparedImage.preprocessed };
   } catch (error) {
     console.error('[Service Hub OCR]', error);
+    if (String(error?.message || error).includes('Too many properties to enumerate')) {
+      throw new Error('تعذر على محرك OCR معالجة صورة المسح. خفّض دقة الماسح إلى 300 DPI ثم أعد المسح؛ لا تحتاج إلى تنزيل مكوّن إضافي.');
+    }
     throw new Error(`تعذر تشغيل محرك OCR المحلي: ${String(error?.message || error).slice(0, 500)}`);
   } finally {
+    if (workerErrorHandler && worker?.worker) worker.worker.removeListener('error', workerErrorHandler);
     if (worker) await worker.terminate().catch(() => {});
   }
 }

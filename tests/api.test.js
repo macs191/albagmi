@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { pbkdf2Sync } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -25,6 +25,7 @@ import { extractScannerFields, normalizeOcrText } from '../src/scanner-text.js';
 
 const require = createRequire(import.meta.url);
 const { exportScannerImage, prepareScannerOcrInput } = require('../electron/scanner-formats.cjs');
+const { bridgeNodeWorkerOnError } = require('../electron/tesseract-worker-compat.cjs');
 const { PDFDocument } = require('pdf-lib');
 
 const ENV_KEYS = [
@@ -673,7 +674,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const workflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.16');
+  assert.equal(packageJson.version, '0.1.17');
   assert.deepEqual(packageJson.build.publish[0], { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
@@ -690,8 +691,10 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /supportedLanguages = new Set\(\['ara\+eng', 'ara', 'eng'\]\)/);
   assert.match(electronMain, /langPath: path\.join\(__dirname, '\.\.', 'dist', 'tesseract', 'tessdata'\)/);
   assert.match(electronMain, /cacheMethod: 'none'/);
-  assert.match(electronMain, /prepareScannerOcrInput\(file\)/);
-  assert.match(electronMain, /using original scan/);
+  assert.match(electronMain, /prepareScannerOcrInput\(file, resizeScannerImageWithWindows\)/);
+  assert.match(electronMain, /worker\.worker\.once\('error'/);
+  assert.match(electronMain, /bridgeNodeWorkerOnError\(\)/);
+  assert.match(electronMain, /2200\.0 \/ \[Math\]::Max/);
   assert.match(preload, /recognizeScannerText/);
   assert.match(preload, /onScannerOcrProgress/);
   const ocrAssetsScript = await readFile(new URL('../scripts/prepare-ocr-assets.mjs', import.meta.url), 'utf8');
@@ -710,7 +713,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /يجب تثبيت آخر تحديث للاستمرار في استخدام البرنامج/);
   assert.match(electronMain, /buttons: \['موافق — تثبيت التحديث الآن'\]/);
   assert.match(electronMain, /response === 0 \|\| response === -1/);
-  assert.match(workflow, /v0\.1\.16/);
+  assert.match(workflow, /v0\.1\.17/);
   assert.match(workflow, /latest\.yml/);
   assert.match(workflow, /\.blockmap/);
   assert.match(appSource, /data-nav="debts"/);
@@ -809,6 +812,41 @@ test('scanner OCR falls back to original BMP bytes when Sharp does not support t
     assert.equal(result.preprocessed, false);
     assert.ok(result.warning.length > 0);
     assert.deepEqual(result.buffer, await readFile(bmp));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('scanner OCR uses a safe converted buffer instead of an unsupported original scan when a fallback processor exists', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'servicehub-ocr-safe-fallback-'));
+  try {
+    const jpeg = join(directory, 'source.jpg');
+    const bmp = join(directory, 'scanner-output.bmp');
+    const pixels = Buffer.alloc(16 * 16 * 3, 210);
+    await sharp(pixels, { raw: { width: 16, height: 16, channels: 3 } }).jpeg().toFile(jpeg);
+    await exportScannerImage(jpeg, bmp, 'bmp');
+    const safePng = await sharp(pixels, { raw: { width: 16, height: 16, channels: 3 } }).png().toBuffer();
+    const result = await prepareScannerOcrInput(bmp, async (inputPath) => {
+      assert.equal(inputPath, bmp);
+      return safePng;
+    });
+    assert.equal(result.preprocessed, true);
+    assert.equal(result.fallbackUsed, true);
+    assert.deepEqual(result.buffer, safePng);
+    assert.notDeepEqual(result.buffer, await readFile(bmp));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Tesseract Node worker errors reject initialization instead of becoming uncaught EventEmitter exceptions', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'servicehub-ocr-worker-error-'));
+  try {
+    const workerPath = join(directory, 'throwing-worker.cjs');
+    await writeFile(workerPath, 'throw new Error("simulated worker startup failure");');
+    assert.equal(bridgeNodeWorkerOnError(), true);
+    const { createWorker } = require('tesseract.js');
+    await assert.rejects(createWorker('eng', 1, { workerPath }), /simulated worker startup failure/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

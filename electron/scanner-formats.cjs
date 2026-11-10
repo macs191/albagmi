@@ -74,11 +74,18 @@ async function prepareScannerOcrImage(inputPath) {
   return `data:image/png;base64,${image.toString('base64')}`;
 }
 
-async function prepareScannerOcrInput(inputPath) {
+async function prepareScannerOcrInput(inputPath, fallbackProcessor) {
   try {
     const dataUrl = await prepareScannerOcrImage(inputPath);
     return { buffer: Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'), preprocessed: true, warning: '' };
   } catch (error) {
+    if (typeof fallbackProcessor === 'function') {
+      const buffer = await fallbackProcessor(inputPath);
+      if (!Buffer.isBuffer(buffer) || buffer.length === 0 || buffer.length > 35 * 1024 * 1024) {
+        throw new Error('تعذر تجهيز صورة آمنة لمحرك OCR.');
+      }
+      return { buffer, preprocessed: true, fallbackUsed: true, warning: String(error?.message || error) };
+    }
     const buffer = fs.readFileSync(inputPath);
     if (!buffer.length) throw error;
     return { buffer, preprocessed: false, warning: String(error?.message || error) };

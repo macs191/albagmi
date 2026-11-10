@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.16
+      - v0.1.17
   workflow_dispatch:
 
 permissions:
@@ -41,9 +41,9 @@ jobs:
       - name: Publish installer on GitHub Release
         shell: pwsh
         run: |
-          $installer = Get-Item "release/ServiceHub-Desktop-0.1.16-Setup.exe"
+          $installer = Get-Item "release/ServiceHub-Desktop-0.1.17-Setup.exe"
           $blockmap = Get-Item "$($installer.FullName).blockmap"
           $latest = Get-Item "release/latest.yml"
-          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.16" --notes "إصلاح خطأ OCR في صور الماسح عالية الدقة، وتحسين استخراج رقم الهوية وتاريخ الميلاد والرقم التسلسلي في بطاقات منفصلة. عند تنزيل تحديث جديد يعرض البرنامج رسالة تطلب تثبيته، ثم يعيد التشغيل لإكمال التثبيت دون خيار التأجيل." --latest --repo $env:GITHUB_REPOSITORY
+          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.17" --notes "إصلاح معالجة صور الماسح عالية الدقة: عند تعذر التصغير المعتاد، يُحوّل التطبيق الصورة محليًا على Windows إلى PNG آمنة بحد أقصى 2200 بكسل قبل OCR، ولا يرسل الصورة الأصلية الضخمة إلى العامل. كما يلتقط التطبيق أخطاء OCR بدل نافذة الخطأ التي كانت توقف العملية. لا يلزم تنزيل مكوّن إضافي، وتظل الصور والنصوص محلية. يعرض التحديث رسالة تطلب التثبيت بعد التنزيل." --latest --repo $env:GITHUB_REPOSITORY
         env:
           GH_TOKEN: ${{ github.token }}
