@@ -89,10 +89,30 @@ function bindEditor(render, toast) {
   document.querySelector('[data-doc-color]')?.addEventListener('input', (event) => runCommand('foreColor', event.target.value));
   document.querySelectorAll('[data-add-field]').forEach((button) => button.addEventListener('click', () => { editor?.focus(); document.execCommand('insertHTML', false, blankField(button.dataset.addField)); }));
   editor?.addEventListener('input', () => { editorHtml = editor.innerHTML; });
-  editor?.addEventListener('dragstart', (event) => { const field = event.target.closest('.document-field'); if (field) { event.dataTransfer.setData('text/plain', field.dataset.field || 'خانة فارغة'); field.classList.add('dragging'); } });
+  editor?.addEventListener('dragstart', (event) => { const field = event.target.closest('.document-field'); if (field) { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', field.dataset.field || 'خانة فارغة'); field.classList.add('dragging'); } });
   editor?.addEventListener('dragend', (event) => event.target.closest('.document-field')?.classList.remove('dragging'));
-  editor?.addEventListener('dragover', (event) => { if (event.target.closest('.document-field') || event.target === editor) event.preventDefault(); });
-  editor?.addEventListener('drop', (event) => { const field = editor.querySelector('.document-field.dragging'); if (!field) return; event.preventDefault(); const target = event.target.closest('.document-field'); if (target && target !== field) target.after(field); else editor.append(field); editorHtml = editor.innerHTML; });
+  editor?.addEventListener('dragover', (event) => { if (editor.contains(event.target)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } });
+  editor?.addEventListener('drop', (event) => {
+    const field = editor.querySelector('.document-field.dragging');
+    if (!field) return;
+    event.preventDefault();
+    let range = null;
+    if (document.caretRangeFromPoint) range = document.caretRangeFromPoint(event.clientX, event.clientY);
+    else if (document.caretPositionFromPoint) {
+      const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+      if (position) { range = document.createRange(); range.setStart(position.offsetNode, position.offset); range.collapse(true); }
+    }
+    if (!range || !editor.contains(range.commonAncestorContainer) || field.contains(range.startContainer)) return;
+    range.deleteContents();
+    range.insertNode(field);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    const after = document.createRange();
+    after.setStartAfter(field);
+    after.collapse(true);
+    selection?.addRange(after);
+    editorHtml = editor.innerHTML;
+  });
   document.querySelector('[data-save-document]')?.addEventListener('click', () => { const title = String(document.querySelector('#documentTitle')?.value || '').trim(); if (!title || !editor) return toast('اكتب اسم الوثيقة أولًا.', 'error'); editor.querySelectorAll('.document-field').forEach((field) => { const width = Math.max(70, Math.min(700, Math.round(field.getBoundingClientRect().width))); field.dataset.width = String(width); field.style.width = `${width}px`; }); const record = { id: editingDocumentId || uid('document'), title, html: editor.innerHTML, createdAt: data.documents.find((item) => item.id === editingDocumentId)?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() }; data.documents = editingDocumentId ? data.documents.map((item) => item.id === editingDocumentId ? record : item) : [record, ...data.documents]; editingDocumentId = null; editorHtml = ''; notify(render, 'تم حفظ الوثيقة بنجاح.'); });
   document.querySelector('[data-close-document-editor]')?.addEventListener('click', () => { editingDocumentId = null; editorHtml = ''; render(); });
 }
