@@ -690,6 +690,10 @@ h3 { margin-bottom: 8px; font-size: 18px; }
 .document-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 14px 0 8px; padding: 9px; background: rgba(3,24,27,.4); border: 1px solid var(--line); border-radius: 10px; }
 .document-toolbar button { min-height: 32px; padding: 0 10px; color: var(--muted); background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 7px; font-size: 11px; }
 .document-toolbar button:hover { color: var(--text); border-color: rgba(85,214,173,.55); }
+.document-toolbar select { min-height: 32px; padding: 0 7px; color: var(--muted); background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 7px; font-size: 11px; }
+.document-toolbar select:focus { color: var(--text); border-color: var(--accent); outline: none; }
+.doc-color-picker { width: 32px; height: 32px; padding: 3px; background: rgba(255,255,255,.04); border: 1px solid var(--line); border-radius: 7px; cursor: pointer; }
+.toolbar-divider { flex: 0 0 1px !important; width: 1px; min-width: 1px !important; height: 24px; margin: 0 3px; background: var(--line); }
 .document-toolbar span { flex: 1; min-width: 10px; }
 .document-editor-help { margin: 0 0 12px; color: var(--muted-2); font-size: 11px; line-height: 1.8; }
 .document-paper { min-height: 760px; padding: 58px 62px; color: #183a35; background: #fff; border: 1px solid #d4e4de; border-radius: 5px; box-shadow: 0 20px 45px rgba(0,0,0,.18); font-family: Tahoma, Arial, sans-serif; font-size: 16px; line-height: 2.05; outline: none; direction: rtl; }
