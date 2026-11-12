@@ -2,6 +2,7 @@ const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage, Menu
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
@@ -277,6 +278,44 @@ function copyText(value) {
   return true;
 }
 
+function backupFiles() {
+  const files = {};
+  const roots = [['remembered-login.json', rememberedLoginPath()]];
+  try {
+    const dir = scannerDirectory();
+    for (const name of fs.readdirSync(dir)) if (/^[0-9a-f-]{36}\.jpg$/i.test(name)) roots.push(['scans/' + name, path.join(dir, name)]);
+  } catch { /* optional scan directory */ }
+  for (const [name, file] of roots) {
+    try { if (fs.statSync(file).isFile()) files[name] = fs.readFileSync(file).toString('base64'); } catch { /* optional local file */ }
+  }
+  return files;
+}
+async function backupLocalData(localStorageData) {
+  const result = await dialog.showSaveDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+    title: 'حفظ النسخة الاحتياطية',
+    defaultPath: path.join(app.getPath('documents'), 'ServiceHub-Backup-' + new Date().toISOString().slice(0, 10) + '.shbackup.gz'),
+    filters: [{ name: 'Service Hub Backup', extensions: ['gz', 'shbackup'] }]
+  });
+  if (result.canceled || !result.filePath) return { cancelled: true };
+  const payload = { format: 'servicehub-backup', version: 1, createdAt: new Date().toISOString(), localStorage: localStorageData && typeof localStorageData === 'object' ? localStorageData : {}, files: backupFiles() };
+  fs.writeFileSync(result.filePath, zlib.gzipSync(Buffer.from(JSON.stringify(payload), 'utf8'), { level: 9 }), { mode: 0o600 });
+  return { cancelled: false, filename: path.basename(result.filePath) };
+}
+async function restoreLocalData() {
+  const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, { title: 'اختيار النسخة الاحتياطية', properties: ['openFile'], filters: [{ name: 'Service Hub Backup', extensions: ['gz', 'shbackup'] }] });
+  if (result.canceled || !result.filePaths[0]) return { cancelled: true };
+  let payload;
+  try { payload = JSON.parse(zlib.gunzipSync(fs.readFileSync(result.filePaths[0])).toString('utf8')); } catch { throw new Error('الملف المحدد ليس نسخة Service Hub مضغوطة صالحة.'); }
+  if (payload?.format !== 'servicehub-backup' || payload.version !== 1 || !payload.localStorage || typeof payload.localStorage !== 'object') throw new Error('إصدار النسخة الاحتياطية غير مدعوم.');
+  const files = payload.files && typeof payload.files === 'object' ? payload.files : {};
+  for (const [name, encoded] of Object.entries(files)) {
+    if (!/^(remembered-login\.json|scans\/[0-9a-f-]{36}\.jpg)$/i.test(name) || typeof encoded !== 'string') continue;
+    const target = name === 'remembered-login.json' ? rememberedLoginPath() : path.join(scannerDirectory(), path.basename(name));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, Buffer.from(encoded, 'base64'), { mode: 0o600 });
+  }
+  return { cancelled: false, restored: true, localStorage: payload.localStorage };
+}
 function safeHttpUrl(value) {
   try {
     const url = new URL(String(value));
@@ -432,6 +471,8 @@ app.whenReady().then(() => {
   ipcMain.handle('get-remembered-login', () => readRememberedLogin());
   ipcMain.handle('save-remembered-login', (_event, credentials) => saveRememberedLogin(credentials));
   ipcMain.handle('clear-remembered-login', () => clearRememberedLogin());
+  ipcMain.handle('backup-local-data', (_event, localStorageData) => backupLocalData(localStorageData));
+  ipcMain.handle('restore-local-data', () => restoreLocalData());
   ipcMain.handle('scanner:acquire', () => acquireScannerImage());
   ipcMain.handle('scanner:read-image', (_event, id) => readScannerImage(id));
   ipcMain.handle('scanner:recognize-text', (event, id, language) => recognizeScannerText(id, language, event));

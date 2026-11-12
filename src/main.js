@@ -5,6 +5,7 @@ import { renderPublicOfficePage, renderPublicPageLoading, renderPublicPageUnavai
 import { bankBalance } from './banks.js';
 import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
 import { extractScannerFields, normalizeOcrText } from './scanner-text.js';
+import { renderDocuments, bindDocuments } from './documents.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -242,7 +243,7 @@ function saveState(deletionPassword, immediate = false) {
 
 function getViewFromHash() {
   const value = window.location.hash.replace('#', '');
-  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'scanner', 'banks', 'debts', 'invoices'] : [];
+  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'scanner', 'banks', 'debts', 'invoices', 'documents'] : [];
   return ['sales', 'settings', ...desktopViews].includes(value) ? value : 'home';
 }
 
@@ -916,13 +917,13 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' ? 'active' : ''}" data-nav="home">${icon('home')}<span>الرئيسية</span></button>
         <button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button>` : ''}
+        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button><button class="nav-item ${currentView === 'documents' ? 'active' : ''}" data-nav="documents">${icon('receipt')}<span>الوثائق والأسعار</span></button>` : ''}
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
-      ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'banks' && window.desktopBridge?.syncSiteTabs ? renderBanks() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : renderSettings()}</div>`}
+      ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? 'الرئيسية' : currentView === 'sales' ? 'المبيعات' : currentView === 'documents' ? 'الوثائق والأسعار' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? renderHome() : currentView === 'sales' ? renderSales() : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'banks' && window.desktopBridge?.syncSiteTabs ? renderBanks() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : currentView === 'documents' && window.desktopBridge?.syncSiteTabs ? renderDocuments() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
@@ -1209,7 +1210,8 @@ function renderSettings() {
     ['account', 'بيانات المستخدم', 'اسم المكتب وطلب تغيير كلمة المرور', 'user'],
     ['sites', 'دليل المواقع', `${state.sites.length} موقعًا · إضافة أو تعديل أو حذف`, 'globe'],
     ['protection', 'حماية المعلومات', deletionPasswordExists ? 'رمز حذف السجلات مضبوط' : 'اضبط رمز حماية المعاملات', 'lock'],
-    ['public', 'صفحة المكتب العامة', 'رابط الصفحة وموقع المكتب على الخرائط', 'external']
+    ['public', 'صفحة المكتب العامة', 'رابط الصفحة وموقع المكتب على الخرائط', 'external'],
+    ['backup', 'النسخ الاحتياطي والاستعادة', 'احفظ بيانات البرنامج المحلية في ملف مضغوط أو استعدها', 'download']
   ];
   return `<section class="settings-view"><div class="view-title-row"><div><p class="eyebrow">التحكم في التطبيق</p><h1>الإعدادات</h1><p class="page-subtitle">اختر القسم؛ تفتح أدواته في نافذة مستقلة لتبقى الشاشة مرتبة.</p></div></div><div class="settings-launch-grid">${options.map(([key, title, desc, iconName]) => `<button class="settings-launch-card" type="button" data-settings-open="${key}"><span class="settings-launch-icon">${icon(iconName)}</span><span><strong>${title}</strong><small>${desc}</small></span><span class="settings-launch-arrow">←</span></button>`).join('')}</div>${settingsDialog ? renderSettingsDialog() : ''}</section>`;
 }
@@ -1224,6 +1226,7 @@ function renderSettingsDialog() {
   else if (settingsDialog === 'protection') content = `<div class="record-protection-settings"><p class="helper-text">لا يمكن حذف معاملة أو مصروف من الواجهة أو الخادم إلا بهذا الرمز. لا تحفظ كلمة المرور نفسها.</p><form id="recordDeletionPasswordForm" class="form-grid account-settings-form">${deletionPasswordExists ? '<label class="full-span">رمز الحذف الحالي<input name="currentPassword" type="password" required minlength="8" maxlength="128" autocomplete="current-password"></label>' : ''}<label>رمز الحذف الجديد<input name="newPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><label>تأكيد الرمز<input name="confirmPassword" type="password" required minlength="8" maxlength="128" autocomplete="new-password"></label><button class="primary-btn full-span" type="submit">${deletionPasswordExists ? 'تغيير رمز الحذف' : 'حفظ رمز الحذف'}</button></form></div>`;
   else if (settingsDialog === 'sites') content = `<div class="settings-dialog-content"><div class="panel add-site-panel"><div class="panel-heading"><h3>${editingSite ? 'تعديل موقع' : 'إضافة موقع جديد'}</h3>${editingSite ? '<button class="text-btn" data-cancel-edit>إلغاء التعديل</button>' : ''}</div><form id="siteForm" class="form-grid site-form"><label>اسم الموقع<input name="name" required value="${editingSite ? escapeHtml(editingSite.name) : ''}" placeholder="مثال: تأميني"></label><label>التصنيف<input name="category" required value="${editingSite ? escapeHtml(editingSite.category) : ''}" placeholder="مثال: التأمين"></label><label class="full-span">رابط الموقع<input name="url" type="url" required value="${editingSite ? escapeHtml(editingSite.url) : ''}" placeholder="https://example.com"></label><label class="full-span">رابط الصورة (اختياري)<input name="imageUrl" type="url" value="${editingSite && !editingSite.image?.startsWith('data:') ? escapeHtml(editingSite.image) : ''}" placeholder="https://example.com/logo.png"></label><label class="file-picker full-span">أو اختر صورة من الجهاز<input name="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml"><span>${icon('image', 17)} اختيار ملف صورة</span></label><button class="primary-btn" type="submit">${icon(editingSite ? 'edit' : 'plus', 17)} ${editingSite ? 'حفظ التعديل' : 'إضافة الموقع'}</button></form></div><div class="manage-list settings-sites-list">${state.sites.map((site) => `<div class="manage-row">${imageMarkup(site, 'mini-image')}<div class="record-main"><strong>${escapeHtml(site.name)}</strong><small>${escapeHtml(site.category)}</small></div><div class="manage-actions"><button class="icon-btn" data-edit-site="${escapeHtml(site.id)}" aria-label="تعديل ${escapeHtml(site.name)}">${icon('edit', 17)}</button><button class="icon-btn danger" data-delete-site="${escapeHtml(site.id)}" aria-label="حذف ${escapeHtml(site.name)}">${icon('trash', 17)}</button></div></div>`).join('')}</div></div>`;
   else if (settingsDialog === 'public') content = '<div class="panel office-panel public-settings-panel"></div>';
+  else if (settingsDialog === 'backup') content = '<div class="backup-settings-panel"><p class="helper-text">ينسخ هذا الملف بيانات التطبيق المحلية، الوثائق والأسعار، المفكرة، الفواتير، المديونيات، إعدادات المواقع، وصور الماسح الموجودة داخل نسخة Windows. لا ترفع البيانات إلى الإنترنت.</p><div class="backup-actions"><button class="primary-btn" type="button" data-backup-local>تنزيل نسخة احتياطية مضغوطة</button><button class="secondary-btn" type="button" data-restore-local>استعادة من ملف مضغوط</button></div><p class="helper-text">الاستعادة تستبدل البيانات المحلية الحالية بعد تأكيدك، ثم يعاد تشغيل التطبيق.</p></div>';
   return `<div class="modal-backdrop settings-modal-backdrop" data-settings-backdrop><section class="modal-card settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsDialogTitle"><header class="modal-heading"><div><p class="eyebrow">الإعدادات</p><h2 id="settingsDialogTitle">${escapeHtml(headings[settingsDialog] || 'إعدادات')}</h2></div><button type="button" class="icon-btn" data-close-settings aria-label="إغلاق">×</button></header>${content}<footer class="modal-actions"><button type="button" class="ghost-btn" data-close-settings>إغلاق</button></footer></section></div>`;
 }
 
@@ -1231,10 +1234,13 @@ function bindViewEvents() {
   mountPaymentMethodFields();
   decoratePaymentRecords();
   mountPublicPageSettings();
+  if (currentView === 'documents' && window.desktopBridge?.syncSiteTabs) bindDocuments(render, (message, type = 'error') => showToast(message, type));
   document.querySelectorAll('[data-settings-open]').forEach((button) => button.addEventListener('click', () => { settingsDialog = button.dataset.settingsOpen; render(); }));
   document.querySelectorAll('[data-close-settings]').forEach((button) => button.addEventListener('click', () => { settingsDialog = null; editingSiteId = null; render(); }));
   document.querySelector('[data-settings-backdrop]')?.addEventListener('click', (event) => { if (event.target === event.currentTarget) { settingsDialog = null; editingSiteId = null; render(); } });
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
+  document.querySelector('[data-backup-local]')?.addEventListener('click', async () => { try { const result = await window.desktopBridge?.backupLocalData?.(Object.fromEntries(Object.entries(localStorage))); if (result?.filename) showToast(`تم حفظ النسخة الاحتياطية: ${result.filename}`); } catch (error) { showToast(error.message || 'تعذر إنشاء النسخة الاحتياطية.', 'error'); } });
+  document.querySelector('[data-restore-local]')?.addEventListener('click', async () => { if (!window.confirm('سيتم استبدال البيانات المحلية الحالية بالنسخة المختارة. هل تريد المتابعة؟')) return; try { const result = await window.desktopBridge?.restoreLocalData?.(); if (result?.restored) { for (const key of Object.keys(localStorage)) localStorage.removeItem(key); for (const [key, value] of Object.entries(result.localStorage || {})) localStorage.setItem(key, String(value)); showToast('تمت الاستعادة. سيعاد تشغيل البرنامج الآن.'); setTimeout(() => window.location.reload(), 900); } } catch (error) { showToast(error.message || 'تعذر استعادة النسخة الاحتياطية.', 'error'); } });
   document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
   for (const prefix of ['transaction', 'expense']) {
     document.querySelector(`#${prefix}PaymentMethod`)?.addEventListener('change', () => updatePaymentMethodField(prefix));
@@ -1754,7 +1760,10 @@ function showToast(message, type = 'success') {
   document.body.appendChild(toast);
   toastTimer = setTimeout(() => toast.remove(), 2600);
 }
-
+window.addEventListener('servicehub-toast', (event) => {
+  const detail = event.detail || {};
+  showToast(detail.message || '', detail.type || 'success');
+});
 window.addEventListener('hashchange', () => { currentView = getViewFromHash(); activeSiteTabId = null; render(); });
 window.addEventListener('resize', () => syncDesktopSiteViews());
 window.desktopBridge?.onSitePopup?.(({ url, title }) => {
