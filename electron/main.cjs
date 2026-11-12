@@ -13,11 +13,27 @@ const { autoUpdater } = require('electron-updater');
 const { exportScannerImage, prepareScannerOcrInput } = require('./scanner-formats.cjs');
 
 let mainWindow;
+const legacyUserDataPath = app.getPath('userData');
+const unifiedUserDataPath = path.join(app.getPath('appData'), 'ServiceHub');
+if (process.platform === 'win32') app.setPath('userData', unifiedUserDataPath);
 const siteViews = new Map();
 const siteSession = () => session.fromPartition('persist:servicehub-sites');
 let downloadHandlerConfigured = false;
 let updateCheckStarted = false;
 let isQuitting = false;
+function migrateUserData() {
+  if (process.platform !== 'win32' || legacyUserDataPath === unifiedUserDataPath || !fs.existsSync(legacyUserDataPath)) return;
+  const merge = (source, target) => {
+    fs.mkdirSync(target, { recursive: true });
+    for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+      const sourcePath = path.join(source, entry.name);
+      const targetPath = path.join(target, entry.name);
+      if (entry.isDirectory()) merge(sourcePath, targetPath);
+      else if (!fs.existsSync(targetPath)) fs.copyFileSync(sourcePath, targetPath);
+    }
+  };
+  try { merge(legacyUserDataPath, unifiedUserDataPath); } catch (error) { console.warn('Could not migrate legacy local data:', error?.message || error); }
+}
 function configureEditContextMenu(webContents) {
   webContents.on('context-menu', (_event, params = {}) => {
     const flags = params.editFlags || {};
@@ -467,6 +483,7 @@ function configureAutoUpdates() {
 }
 
 app.whenReady().then(() => {
+  migrateUserData();
   ipcMain.on('sync-site-tabs', (_event, tabs, activeId, bounds) => syncSiteTabs(tabs, activeId, bounds));
   ipcMain.handle('get-remembered-login', () => readRememberedLogin());
   ipcMain.handle('save-remembered-login', (_event, credentials) => saveRememberedLogin(credentials));
