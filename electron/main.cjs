@@ -21,6 +21,11 @@ const siteSession = () => session.fromPartition('persist:servicehub-sites');
 let downloadHandlerConfigured = false;
 let updateCheckStarted = false;
 let isQuitting = false;
+let updateStatus = { phase: 'idle', version: '', percent: 0, transferred: 0, total: 0, message: '' };
+function setUpdateStatus(patch) {
+  updateStatus = { ...updateStatus, ...patch };
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-status', updateStatus);
+}
 function migrateUserData() {
   if (process.platform !== 'win32' || legacyUserDataPath === unifiedUserDataPath || !fs.existsSync(legacyUserDataPath)) return;
   const merge = (source, target) => {
@@ -443,6 +448,9 @@ function createMainWindow() {
     }
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (updateStatus.phase !== 'idle') mainWindow.webContents.send('update-status', updateStatus);
+  });
   configureEditContextMenu(mainWindow.webContents);
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if ((input.control || input.meta) && input.key.toLowerCase() === 'p') {
@@ -462,20 +470,14 @@ function configureAutoUpdates() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
-  autoUpdater.on('error', (error) => console.warn('Automatic update check failed:', error?.message || error));
+  autoUpdater.on('checking-for-update', () => setUpdateStatus({ phase: 'checking', message: 'جارٍ البحث عن تحديث جديد...' }));
+  autoUpdater.on('update-available', (info) => setUpdateStatus({ phase: 'downloading', version: String(info?.version || 'الجديد'), percent: 0, transferred: 0, total: 0, message: 'جارٍ تنزيل التحديث...' }));
+  autoUpdater.on('download-progress', (progress) => setUpdateStatus({ phase: 'downloading', percent: Math.max(0, Math.min(100, Number(progress?.percent) || 0)), transferred: Number(progress?.transferred) || 0, total: Number(progress?.total) || 0, message: 'جارٍ تنزيل التحديث...' }));
+  autoUpdater.on('update-not-available', () => setUpdateStatus({ phase: 'idle', message: '' }));
+  autoUpdater.on('error', (error) => { setUpdateStatus({ phase: 'error', message: 'تعذر تنزيل التحديث الآن. سيحاول البرنامج مرة أخرى لاحقًا.' }); console.warn('Automatic update check failed:', error?.message || error); });
   autoUpdater.on('update-downloaded', (info) => {
     const version = String(info?.version || 'الجديد');
-    const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-    dialog.showMessageBox(owner, {
-      type: 'warning',
-      title: 'يجب تثبيت تحديث Service Hub',
-      message: `تم تنزيل الإصدار ${version}. يجب تثبيت آخر تحديث للاستمرار في استخدام البرنامج. سيُغلق البرنامج الآن ويُعاد تشغيله لتثبيت التحديث.`,
-      buttons: ['موافق — تثبيت التحديث الآن'],
-      defaultId: 0,
-      noLink: true
-    }).then(({ response }) => {
-      if (response === 0 || response === -1) autoUpdater.quitAndInstall(false, true);
-    }).catch((error) => console.warn('Could not show update prompt:', error?.message || error));
+    setUpdateStatus({ phase: 'downloaded', version, percent: 100, message: 'تم تنزيل التحديث وأصبح جاهزًا للتثبيت.' });
   });
   setTimeout(() => {
     if (!isQuitting) autoUpdater.checkForUpdates().catch((error) => console.warn('Automatic update check failed:', error?.message || error));
@@ -490,6 +492,8 @@ app.whenReady().then(() => {
   ipcMain.handle('clear-remembered-login', () => clearRememberedLogin());
   ipcMain.handle('backup-local-data', (_event, localStorageData) => backupLocalData(localStorageData));
   ipcMain.handle('restore-local-data', () => restoreLocalData());
+  ipcMain.handle('get-update-status', () => updateStatus);
+  ipcMain.handle('install-update', () => { if (updateStatus.phase !== 'downloaded') return false; isQuitting = true; autoUpdater.quitAndInstall(false, true); return true; });
   ipcMain.handle('scanner:acquire', () => acquireScannerImage());
   ipcMain.handle('scanner:read-image', (_event, id) => readScannerImage(id));
   ipcMain.handle('scanner:recognize-text', (event, id, language) => recognizeScannerText(id, language, event));

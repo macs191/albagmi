@@ -78,6 +78,7 @@ let reportDialogEnd = todayKey();
 let recordToDelete = null;
 let toastTimer;
 let desktopSiteResizeObserver;
+let updateStatus = { phase: 'idle', version: '', percent: 0, message: '' };
 let observedDesktopSiteHost = null;
 let desktopSyncFrame = 0;
 
@@ -907,8 +908,17 @@ async function restoreSession() {
   render();
 }
 
+function renderUpdateBanner() {
+  if (!window.desktopBridge?.syncSiteTabs || !updateStatus || updateStatus.phase === 'idle') return '';
+  const percent = Math.round(Math.max(0, Math.min(100, Number(updateStatus.percent) || 0)));
+  const title = updateStatus.phase === 'downloaded' ? 'التحديث جاهز للتثبيت' : updateStatus.phase === 'error' ? 'تعذر تنزيل التحديث' : updateStatus.phase === 'checking' ? 'جارٍ البحث عن تحديث' : 'جارٍ تنزيل تحديث جديد';
+  const message = updateStatus.phase === 'downloaded' ? `الإصدار ${escapeHtml(updateStatus.version || 'الجديد')} تم تنزيله ويمكن تثبيته الآن.` : escapeHtml(updateStatus.message || `نسبة التنزيل ${percent}%`);
+  return `<div class="update-banner update-${escapeAttribute(updateStatus.phase)}" role="status"><div class="update-banner-copy"><span class="update-banner-icon">↻</span><div><strong>${title}</strong><span>${message}</span></div></div>${updateStatus.phase === 'downloading' ? `<div class="update-progress"><i style="width:${percent}%"></i></div><b class="update-percent">${percent}%</b>` : ''}${updateStatus.phase === 'downloaded' ? '<button class="primary-btn update-install-btn" type="button" data-install-update>تثبيت الآن وإعادة التشغيل</button>' : ''}</div>`;
+}
+
 function renderShell() {
   return `<div class="app-shell ${activeSiteTabId ? 'site-active' : ''} ${window.desktopBridge?.syncSiteTabs ? 'desktop-app' : 'web-app'}">
+    <div id="updateBannerHost">${renderUpdateBanner()}</div>
     <aside class="sidebar">
       <div class="brand-block">
         <div class="brand-mark">SH</div>
@@ -1767,6 +1777,21 @@ function showToast(message, type = 'success') {
 window.addEventListener('servicehub-toast', (event) => {
   const detail = event.detail || {};
   showToast(detail.message || '', detail.type || 'success');
+});
+function applyUpdateStatus(status) {
+  updateStatus = { ...updateStatus, ...(status || {}) };
+  const host = document.querySelector('#updateBannerHost');
+  if (host) host.innerHTML = renderUpdateBanner();
+  else if (updateStatus.phase !== 'idle' && window.desktopBridge?.syncSiteTabs) render();
+}
+window.desktopBridge?.onUpdateStatus?.(applyUpdateStatus);
+window.desktopBridge?.getUpdateStatus?.().then?.(applyUpdateStatus);
+document.addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-install-update]');
+  if (!button) return;
+  button.disabled = true;
+  button.textContent = 'جارٍ تثبيت التحديث…';
+  try { await window.desktopBridge?.installUpdate?.(); } catch { button.disabled = false; button.textContent = 'حاول التثبيت مرة أخرى'; }
 });
 window.addEventListener('hashchange', () => { currentView = getViewFromHash(); activeSiteTabId = null; render(); });
 window.addEventListener('resize', () => syncDesktopSiteViews());
