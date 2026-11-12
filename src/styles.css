@@ -703,3 +703,34 @@ h3 { margin-bottom: 8px; font-size: 18px; }
 .backup-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 @media (max-width: 760px) { .documents-layout { grid-template-columns: 1fr; } .document-editor-header { align-items: stretch; flex-direction: column; } .document-paper { min-height: 620px; padding: 34px 22px; } .document-list-row, .price-list-row { align-items: flex-start; flex-direction: column; } }
 @media print { .document-paper { box-shadow: none; border: 0; } }
+.web-readonly-view { display: grid; gap: 18px; }
+.web-readonly-note { padding: 12px 15px; color: #b9ddd2; background: rgba(30, 126, 100, .13); border: 1px solid rgba(85, 214, 173, .25); border-radius: 10px; line-height: 1.8; font-size: 12px; }
+.date-picker { display: grid; gap: 6px; min-width: 170px; color: var(--muted); font-size: 11px; }
+.date-picker input { min-height: 40px; }
+.hero-stat { display: grid; gap: 3px; min-width: 170px; padding: 17px 20px; color: var(--text); background: rgba(85, 214, 173, .1); border: 1px solid rgba(85, 214, 173, .25); border-radius: 12px; text-align: center; }
+.hero-stat span { color: var(--accent); font-size: 21px; font-weight: 800; }
+.hero-stat small { color: var(--muted); }
+.web-readonly-view .bank-card-visual { cursor: pointer; }
+.web-readonly-view .bank-card-visual:hover { transform: translateY(-3px); }
+.web-app .sidebar { width: 100%; height: auto; min-height: 0; padding: 12px 18px; display: flex; align-items: center; gap: 18px; border-left: 0; border-bottom: 1px solid var(--line); }
+.web-app .brand-block, .web-app .sidebar-office, .web-app .sidebar-footer, .web-app .sidebar-account { display: none; }
+.web-app .main-nav { display: flex; flex: 1; justify-content: flex-end; gap: 8px; }
+.web-app .main-nav .nav-item { min-width: 112px; justify-content: center; }
+.web-app .main-content { min-width: 0; }
+@media (max-width: 680px) {
+  .web-app { padding-bottom: 76px; }
+  .web-app .sidebar { position: fixed; z-index: 30; right: 0; bottom: 0; left: 0; padding: 7px 8px calc(7px + env(safe-area-inset-bottom)); background: rgba(7, 28, 31, .96); border-top: 1px solid var(--line); border-bottom: 0; backdrop-filter: blur(16px); }
+  .web-app .main-nav { width: 100%; justify-content: space-around; gap: 3px; }
+  .web-app .main-nav .nav-item { min-width: 0; flex: 1; padding: 8px 4px; flex-direction: column; gap: 3px; font-size: 10px; }
+  .web-app .main-nav .nav-item svg { width: 19px; height: 19px; }
+  .web-app .topbar { padding: 12px 15px; }
+  .web-app .topbar-actions .live-badge { display: none; }
+  .web-app .page-container { padding: 15px 12px 20px; }
+  .web-app .view-title-row { align-items: stretch; flex-direction: column; gap: 12px; }
+  .web-app .date-picker { width: 100%; }
+  .web-app .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .web-app .records-layout { grid-template-columns: 1fr; }
+  .web-app .bank-period-filter { width: 100%; flex-wrap: wrap; }
+  .web-app .bank-period-filter label { flex: 1; min-width: 120px; }
+  .web-app .bank-ledger-table { min-width: 650px; }
+}

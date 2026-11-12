@@ -895,7 +895,7 @@ test('sales and service UI hides redundant chrome and requires the deletion dial
   const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8');
   assert.match(source, /id="embeddedSiteHost"/);
-  assert.match(source, /class="app-shell \$\{activeSiteTabId \? 'site-active' : ''\}"/);
+  assert.match(source, /class="app-shell \$\{activeSiteTabId \? 'site-active' : ''\} \$\{window\.desktopBridge\?\.syncSiteTabs \? 'desktop-app' : 'web-app'\}"/);
   assert.match(styles, /\.app-shell\.site-active \.sidebar \{ display: none; \}/);
   assert.doesNotMatch(source, /الموقع داخل النظام · لا يظهر الرابط/);
   assert.doesNotMatch(source, /إذا ظهرت رسالة «لا يوجد اتصال»/);
@@ -942,12 +942,13 @@ test('bank ledger reconciles deposits, withdrawals, transfers, bank sales, expen
   assert.equal(bTransfer.amount, 30);
 });
 
-test('bank controls and payment method fields are Windows-only and image links remain safe', async () => {
+test('bank controls remain Windows-only while web bank views are read-only and image links remain safe', async () => {
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const viewSource = await readFile(new URL('../src/bank-view.js', import.meta.url), 'utf8');
   const electronMain = await readFile(new URL('../electron/main.cjs', import.meta.url), 'utf8');
   const fields = renderPaymentMethodFields('transaction', [{ id: 'b1', name: 'الراجحي' }]);
-  assert.match(appSource, /currentView === 'banks' && window\.desktopBridge\?\.syncSiteTabs \? renderBanks\(\)/);
+  assert.match(appSource, /currentView === 'banks' \? \(window\.desktopBridge\?\.syncSiteTabs \? renderBanks\(\) : renderWebBanks\(/);
+  assert.match(appSource, /renderWebSales\(state, selectedSalesDate, todayKey\)/);
   assert.match(appSource, /if \(!window\.desktopBridge\?\.syncSiteTabs \|\| currentView !== 'sales'\) return/);
   assert.match(appSource, /paymentMethod, bankAccountId/);
   assert.match(viewSource, /url\.protocol === 'https:'/);
