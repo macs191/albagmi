@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.25
+      - v0.1.26
   workflow_dispatch:
 
 permissions:
@@ -41,9 +41,9 @@ jobs:
       - name: Publish installer on GitHub Release
         shell: pwsh
         run: |
-          $installer = Get-Item "release/ServiceHub-Desktop-0.1.25-Setup.exe"
+          $installer = Get-Item "release/ServiceHub-Desktop-0.1.26-Setup.exe"
           $blockmap = Get-Item "$($installer.FullName).blockmap"
           $latest = Get-Item "release/latest.yml"
-          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.25" --notes "تحسين محرر الوثائق ليشمل حجم ونوع ولون الخط، المحاذاة يمين ويسار ووسط وضبط، العناوين والقوائم والتراجع وإعادة التنسيق، مع بحث سريع ونوافذ تفاصيل وطباعة A4 أنيقة وتخزين موحد محلي. يتضمن الإصدار أيضًا ميزات الأسعار والنسخ الاحتياطي وإصلاحات OCR السابقة." --latest --repo $env:GITHUB_REPOSITORY
+          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.26" --notes "تحسين محرر الوثائق ليشمل حجم ونوع ولون الخط، المحاذاة يمين ويسار ووسط وضبط، العناوين والقوائم والتراجع وإعادة التنسيق، مع بحث سريع ونوافذ تفاصيل وطباعة A4 أنيقة وتخزين موحد محلي. يتضمن الإصدار أيضًا ميزات الأسعار والنسخ الاحتياطي وإصلاحات OCR السابقة." --latest --repo $env:GITHUB_REPOSITORY
         env:
           GH_TOKEN: ${{ github.token }}

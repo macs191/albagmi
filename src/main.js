@@ -462,7 +462,8 @@ function formatMoney(value) {
 }
 
 function formatDateTime(timestamp) {
-  return new Intl.DateTimeFormat('ar-SA', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(timestamp));
+  const date = new Date(timestamp || Date.now());
+  return new Intl.DateTimeFormat('ar-SA', { dateStyle: 'medium', timeStyle: 'short' }).format(Number.isNaN(date.getTime()) ? new Date() : date);
 }
 
 function imageMarkup(site, sizeClass = '') {
@@ -473,6 +474,7 @@ function imageMarkup(site, sizeClass = '') {
 
 function render() {
   const root = document.querySelector('#app');
+  if (!root) { requestAnimationFrame(render); return; }
   if (window.location.hash === '#floating-notepad') { root.innerHTML = renderFloatingNotepad(); bindFloatingNotepad(); return; }
   if (publicPageSlug) {
     if (authSession?.role === 'admin') saveSession(null);
@@ -1070,6 +1072,7 @@ function renderCustomerCopyButtons(customer) {
   return customerValues(customer).map(([label, value]) => `<button class="customer-copy-chip" type="button" data-copy-customer-value="${escapeAttribute(value)}" title="نسخ ${escapeAttribute(label)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>نسخ</small></button>`).join('');
 }
 function renderCustomers() {
+  customers = Array.isArray(customers) ? customers.filter((customer) => customer && typeof customer === 'object') : [];
   const editing = customers.find((item) => item.id === editingCustomerId) || {};
   const extra = (editing.extraFields || []).map((field) => `${field.label}: ${field.value}`).join('\n');
   const cards = customers.map((customer) => `<article class="customer-card panel"><header><div><span class="detail-kicker">عميل محفوظ</span><h3>${escapeHtml(customer.name)}</h3></div><div class="customer-card-actions"><button class="icon-btn" type="button" data-edit-customer="${escapeAttribute(customer.id)}">${icon('edit', 17)}</button><button class="icon-btn danger" type="button" data-delete-customer="${escapeAttribute(customer.id)}">${icon('trash', 17)}</button></div></header><div class="customer-copy-grid"><button class="customer-copy-chip" type="button" data-copy-customer-value="${escapeAttribute(customer.name)}"><span>الاسم</span><strong>${escapeHtml(customer.name)}</strong><small>نسخ</small></button>${renderCustomerCopyButtons(customer)}</div><small class="customer-saved-at">تم الحفظ ${escapeHtml(formatDateTime(customer.updatedAt))}</small></article>`).join('');

@@ -340,6 +340,12 @@ async function choosePdfFolder() {
   return { cancelled: false, folder: selectedPdfFolder, folderName: path.basename(selectedPdfFolder), files: listPdfFiles(selectedPdfFolder) };
 }
 
+function loadPdfFolder(folder) {
+  const resolved = path.resolve(String(folder || ''));
+  selectedPdfFolder = resolved;
+  return { cancelled: false, folder: selectedPdfFolder, folderName: path.basename(selectedPdfFolder), files: listPdfFiles(selectedPdfFolder) };
+}
+
 function readPdfFile(filePath) {
   const requested = path.resolve(String(filePath || ''));
   const root = path.resolve(selectedPdfFolder || '');
@@ -559,6 +565,7 @@ app.whenReady().then(() => {
   ipcMain.handle('scanner:delete-image', (_event, id) => deleteScannerImage(id));
   ipcMain.handle('scanner:copy-text', (_event, text) => copyText(text));
   ipcMain.handle('pdf:choose-folder', () => choosePdfFolder());
+  ipcMain.handle('pdf:load-folder', (_event, folder) => loadPdfFolder(folder));
   ipcMain.handle('pdf:read-file', (_event, filePath) => readPdfFile(filePath));
   ipcMain.handle('pdf:ocr-page', (_event, dataUrl, language) => recognizePdfPageText(dataUrl, language));
   ipcMain.handle('open-floating-notepad', () => openFloatingNotepad());
