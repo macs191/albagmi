@@ -674,7 +674,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const workflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.24');
+  assert.equal(packageJson.version, '0.1.25');
   assert.deepEqual(packageJson.build.publish[0], { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
@@ -715,7 +715,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /install-update/);
   assert.match(appSource, /data-install-update/);
   assert.match(appSource, /update-progress/);
-  assert.match(workflow, /v0\.1\.24/);
+  assert.match(workflow, /v0\.1\.25/);
   assert.match(workflow, /latest\.yml/);
   assert.match(workflow, /\.blockmap/);
   assert.match(appSource, /data-nav="debts"/);

@@ -11,6 +11,7 @@ let pageText = '';
 let editedText = '';
 let searchQuery = '';
 let loading = false;
+let ocrLoading = false;
 let savedNotes = loadNotes();
 
 function loadNotes() {
@@ -32,7 +33,7 @@ function renderFileList() {
 export function renderPdfViewer() {
   const file = currentFile();
   const note = selectedPath ? (savedNotes[selectedPath] || '') : '';
-  return `<section class="pdf-viewer-page"><div class="view-title-row"><div><p class="eyebrow">مكتبة المستندات</p><h1>عارض PDF</h1><p class="page-subtitle">اختر مجلدًا لعرض كل ملفات PDF الموجودة داخله، مع قراءة النص ونسخه وتحريره وحفظ ملاحظتك محليًا.</p></div><button class="primary-btn" type="button" data-pdf-choose-folder>اختيار مجلد PDF</button></div><div class="pdf-folder-bar"><strong>${folderName ? `المجلد: ${escapeHtml(folderName)}` : 'لم يتم اختيار مجلد بعد'}</strong><span>${files.length} ملف PDF</span></div><div class="pdf-layout"><aside class="pdf-library panel"><div class="panel-heading"><div><p class="eyebrow">الملفات</p><h2>قائمة PDF</h2></div><span class="record-count">${files.length}</span></div><input class="pdf-search" id="pdfSearch" type="search" value="${escapeAttribute(searchQuery)}" placeholder="ابحث باسم الملف..." autocomplete="off"><div class="pdf-file-list">${renderFileList()}</div></aside><section class="pdf-workspace panel">${file ? `<header class="pdf-workspace-header"><div><strong>${escapeHtml(file.name)}</strong><small>${formatSize(file.size)} · صفحة ${pageNumber}${pdfDocument ? ` من ${pdfDocument.numPages}` : ''}</small></div><div class="pdf-toolbar"><button class="ghost-btn" type="button" data-pdf-prev ${pageNumber <= 1 ? 'disabled' : ''}>السابق</button><button class="ghost-btn" type="button" data-pdf-next ${!pdfDocument || pageNumber >= pdfDocument.numPages ? 'disabled' : ''}>التالي</button><button class="secondary-btn" type="button" data-pdf-copy>نسخ نص الصفحة</button></div></header><div class="pdf-page-stage"><canvas id="pdfCanvas"></canvas>${loading ? '<div class="pdf-loading">جارٍ تحميل الصفحة…</div>' : ''}</div><div class="pdf-text-editor"><div class="panel-heading"><div><p class="eyebrow">نسخ وتعديل النص</p><h3>نص الصفحة</h3></div><button class="primary-btn" type="button" data-pdf-save-note>حفظ النص محليًا</button></div><textarea id="pdfTextEditor" rows="9" placeholder="إذا كان الملف يحتوي نصًا سيظهر هنا. يمكنك تعديله وحفظه كملاحظة مرتبطة بملف PDF.">${escapeHtml(editedText || note || pageText)}</textarea><small class="helper-text">ملفات PDF المصورة تحتاج OCR لاستخراج النص؛ يمكن فتحها ومراجعتها، وسيُضاف OCR للصور في مرحلة تالية.</small></div>` : '<div class="pdf-empty-state"><strong>اختر ملف PDF من القائمة</strong><span>يمكنك فتح أكثر من 20 ملفًا، والبحث بينها، ثم نسخ نص الصفحة أو حفظ نسخة نصية معدلة محليًا.</span></div>'}</section></div></section>`;
+  return `<section class="pdf-viewer-page"><div class="view-title-row"><div><p class="eyebrow">مكتبة المستندات</p><h1>عارض PDF</h1><p class="page-subtitle">اختر مجلدًا لعرض كل ملفات PDF الموجودة داخله، مع قراءة النص ونسخه وتشغيل OCR للصفحات المصورة.</p></div><button class="primary-btn" type="button" data-pdf-choose-folder>اختيار مجلد PDF</button></div><div class="pdf-folder-bar"><strong>${folderName ? `المجلد: ${escapeHtml(folderName)}` : 'لم يتم اختيار مجلد بعد'}</strong><span>${files.length} ملف PDF</span></div><div class="pdf-layout"><aside class="pdf-library panel"><div class="panel-heading"><div><p class="eyebrow">الملفات</p><h2>قائمة PDF</h2></div><span class="record-count">${files.length}</span></div><input class="pdf-search" id="pdfSearch" type="search" value="${escapeAttribute(searchQuery)}" placeholder="ابحث باسم الملف..." autocomplete="off"><div class="pdf-file-list">${renderFileList()}</div></aside><section class="pdf-workspace panel">${file ? `<header class="pdf-workspace-header"><div><strong>${escapeHtml(file.name)}</strong><small>${formatSize(file.size)} · صفحة ${pageNumber}${pdfDocument ? ` من ${pdfDocument.numPages}` : ''}</small></div><div class="pdf-toolbar"><button class="ghost-btn" type="button" data-pdf-prev ${pageNumber <= 1 ? 'disabled' : ''}>السابق</button><button class="ghost-btn" type="button" data-pdf-next ${!pdfDocument || pageNumber >= pdfDocument.numPages ? 'disabled' : ''}>التالي</button><button class="secondary-btn" type="button" data-pdf-copy>نسخ النص</button><button class="secondary-btn" type="button" data-pdf-ocr ${ocrLoading ? 'disabled' : ''}>${ocrLoading ? 'جارٍ قراءة الصورة…' : 'قراءة الصفحة OCR'}</button></div></header><div class="pdf-page-stage"><canvas id="pdfCanvas"></canvas>${loading ? '<div class="pdf-loading">جارٍ تحميل الصفحة…</div>' : ''}</div><div class="pdf-text-editor"><div class="panel-heading"><div><p class="eyebrow">نسخ وتعديل النص</p><h3>نص الصفحة</h3></div><button class="primary-btn" type="button" data-pdf-save-note>حفظ النص محليًا</button></div><textarea id="pdfTextEditor" rows="9" placeholder="نص الصفحة سيظهر هنا، أو اضغط قراءة الصفحة OCR إذا كانت الصفحة صورة.">${escapeHtml(editedText || note || pageText)}</textarea><small class="helper-text">الزر OCR يقرأ الصفحات المصورة محليًا بالعربية والإنجليزية، ثم يمكنك تعديل النص ونسخه.</small></div>` : '<div class="pdf-empty-state"><strong>اختر ملف PDF من القائمة</strong><span>يمكنك فتح أكثر من 20 ملفًا، والبحث بينها، ثم نسخ نص الصفحة أو حفظ نسخة نصية معدلة محليًا.</span></div>'}</section></div></section>`;
 }
 
 async function extractPageText(page) {
@@ -48,11 +49,26 @@ async function renderPage() {
   const context = canvas.getContext('2d');
   canvas.width = Math.floor(viewport.width);
   canvas.height = Math.floor(viewport.height);
-  canvas.style.width = `${Math.min(100, viewport.width)}px`;
+  canvas.style.width = `${Math.min(viewport.width, 900)}px`;
   await page.render({ canvasContext: context, viewport }).promise;
   pageText = await extractPageText(page);
   const editor = document.querySelector('#pdfTextEditor');
   if (editor && !editor.matches(':focus')) editor.value = savedNotes[`${selectedPath}#${pageNumber}`] || pageText;
+}
+async function ocrCurrentPage(render) {
+  if (!pdfDocument || ocrLoading) return;
+  const canvas = document.querySelector('#pdfCanvas');
+  if (!canvas) return;
+  ocrLoading = true; render();
+  try {
+    const image = canvas.toDataURL('image/png');
+    const result = await window.desktopBridge.ocrPdfPage(image, 'ara+eng');
+    pageText = String(result?.text || '').trim();
+    const editor = document.querySelector('#pdfTextEditor');
+    if (editor) editor.value = pageText;
+    showToast(pageText ? 'تم استخراج النص من صورة الصفحة ويمكنك نسخه أو تعديله.' : 'لم يظهر نص واضح في صورة الصفحة.', pageText ? 'success' : 'error');
+  } catch (error) { showToast(error.message || 'تعذر قراءة الصفحة المصورة.', 'error'); }
+  finally { ocrLoading = false; render(); }
 }
 async function openFile(path, render) {
   selectedPath = path; pageNumber = 1; pageText = ''; editedText = ''; pdfDocument = null; loading = true; render();
@@ -72,6 +88,7 @@ export function bindPdfViewer(render) {
   document.querySelectorAll('[data-open-pdf]').forEach((button) => button.addEventListener('click', () => openFile(button.dataset.openPdf, render)));
   document.querySelector('[data-pdf-prev]')?.addEventListener('click', async () => { if (pageNumber <= 1) return; pageNumber -= 1; render(); await renderPage(); });
   document.querySelector('[data-pdf-next]')?.addEventListener('click', async () => { if (!pdfDocument || pageNumber >= pdfDocument.numPages) return; pageNumber += 1; render(); await renderPage(); });
+  document.querySelector('[data-pdf-ocr]')?.addEventListener('click', () => ocrCurrentPage(render));
   document.querySelector('[data-pdf-copy]')?.addEventListener('click', async () => { const value = document.querySelector('#pdfTextEditor')?.value || pageText; if (!value) return showToast('لا يوجد نص قابل للنسخ في هذه الصفحة.', 'error'); try { await window.desktopBridge?.copyText?.(value); showToast('تم نسخ نص الصفحة.'); } catch { showToast('تعذر نسخ النص.', 'error'); } });
   document.querySelector('[data-pdf-save-note]')?.addEventListener('click', () => { const value = document.querySelector('#pdfTextEditor')?.value || ''; if (!selectedPath) return; savedNotes[`${selectedPath}#${pageNumber}`] = value; saveNotes(); showToast('تم حفظ النص المعدل كملاحظة محلية مرتبطة بالصفحة.'); });
 }

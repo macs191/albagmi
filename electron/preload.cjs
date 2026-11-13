@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('desktopBridge', {
   copyText: (text) => ipcRenderer.invoke('scanner:copy-text', text),
   choosePdfFolder: () => ipcRenderer.invoke('pdf:choose-folder'),
   readPdfFile: (filePath) => ipcRenderer.invoke('pdf:read-file', filePath),
+  ocrPdfPage: (dataUrl, language) => ipcRenderer.invoke('pdf:ocr-page', dataUrl, language),
   openFloatingNotepad: () => ipcRenderer.invoke('open-floating-notepad'),
   exportScannerDocument: (request) => ipcRenderer.invoke('scanner:export', request),
   printScannerDocument: (id) => ipcRenderer.invoke('scanner:print', id),

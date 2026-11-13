@@ -235,6 +235,28 @@ async function recognizeScannerText(id, language, event) {
   }
 }
 
+async function recognizePdfPageText(dataUrl, language = 'ara+eng') {
+  if (!['ara+eng', 'ara', 'eng'].includes(language)) throw new Error('لغة OCR المختارة غير مدعومة.');
+  const match = /^data:image\/(?:png|jpeg|jpg);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
+  if (!match) throw new Error('صورة صفحة PDF غير صالحة.');
+  const image = Buffer.from(match[1], 'base64');
+  if (image.length < 100 || image.length > 35 * 1024 * 1024) throw new Error('حجم صورة صفحة PDF غير مسموح.');
+  let worker;
+  let workerErrorHandler;
+  try {
+    worker = await createWorker(language, 1, { langPath: path.join(__dirname, '..', 'dist', 'tesseract', 'tessdata'), gzip: true, cacheMethod: 'none' });
+    const workerFailure = new Promise((_, reject) => { workerErrorHandler = (error) => reject(error); worker.worker.once('error', workerErrorHandler); });
+    await worker.setParameters({ preserve_interword_spaces: '1', user_defined_dpi: '300' });
+    const result = await Promise.race([worker.recognize(image), workerFailure]);
+    return { text: String(result.data?.text || ''), confidence: Number(result.data?.confidence) || 0 };
+  } catch (error) {
+    throw new Error(`تعذر تشغيل OCR المحلي لصفحة PDF: ${String(error?.message || error).slice(0, 500)}`);
+  } finally {
+    if (workerErrorHandler && worker?.worker) worker.worker.removeListener('error', workerErrorHandler);
+    if (worker) await worker.terminate().catch(() => {});
+  }
+}
+
 function deleteScannerImage(id) {
   const file = scannerImagePath(id);
   try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -538,6 +560,7 @@ app.whenReady().then(() => {
   ipcMain.handle('scanner:copy-text', (_event, text) => copyText(text));
   ipcMain.handle('pdf:choose-folder', () => choosePdfFolder());
   ipcMain.handle('pdf:read-file', (_event, filePath) => readPdfFile(filePath));
+  ipcMain.handle('pdf:ocr-page', (_event, dataUrl, language) => recognizePdfPageText(dataUrl, language));
   ipcMain.handle('open-floating-notepad', () => openFloatingNotepad());
   ipcMain.handle('scanner:export', (_event, request) => exportScannerDocument(request));
   ipcMain.handle('scanner:print', (_event, id) => printScannerDocument(id));
