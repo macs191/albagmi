@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage, Menu, clipboard, dialog } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage, Menu, clipboard, dialog, globalShortcut } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -22,6 +22,8 @@ let downloadHandlerConfigured = false;
 let updateCheckStarted = false;
 let isQuitting = false;
 let updateStatus = { phase: 'idle', version: '', percent: 0, transferred: 0, total: 0, message: '' };
+let selectedPdfFolder = '';
+let floatingNotepadWindow = null;
 function setUpdateStatus(patch) {
   updateStatus = { ...updateStatus, ...patch };
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-status', updateStatus);
@@ -299,6 +301,41 @@ function copyText(value) {
   return true;
 }
 
+function listPdfFiles(folder) {
+  const root = path.resolve(String(folder || ''));
+  if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error('مجلد PDF غير صالح.');
+  return fs.readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isFile() && /\.pdf$/i.test(entry.name)).slice(0, 1000).map((entry) => {
+    const filePath = path.join(root, entry.name);
+    const stats = fs.statSync(filePath);
+    return { path: filePath, name: entry.name, size: stats.size, modifiedAt: stats.mtime.toISOString() };
+  }).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+}
+
+async function choosePdfFolder() {
+  const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, { title: 'اختيار مجلد ملفات PDF', properties: ['openDirectory'] });
+  if (result.canceled || !result.filePaths[0]) return { cancelled: true, files: [] };
+  selectedPdfFolder = path.resolve(result.filePaths[0]);
+  return { cancelled: false, folder: selectedPdfFolder, folderName: path.basename(selectedPdfFolder), files: listPdfFiles(selectedPdfFolder) };
+}
+
+function readPdfFile(filePath) {
+  const requested = path.resolve(String(filePath || ''));
+  const root = path.resolve(selectedPdfFolder || '');
+  if (!root || (requested !== root && !requested.startsWith(`${root}${path.sep}`))) throw new Error('مسار ملف PDF غير مسموح. اختر المجلد مرة أخرى.');
+  if (!/\.pdf$/i.test(requested) || !fs.existsSync(requested)) throw new Error('ملف PDF غير موجود.');
+  const stats = fs.statSync(requested);
+  if (!stats.isFile() || stats.size > 150 * 1024 * 1024) throw new Error('حجم ملف PDF يتجاوز الحد المسموح 150 ميجابايت.');
+  return { name: path.basename(requested), size: stats.size, data: `data:application/pdf;base64,${fs.readFileSync(requested).toString('base64')}` };
+}
+
+function openFloatingNotepad() {
+  if (floatingNotepadWindow && !floatingNotepadWindow.isDestroyed()) { floatingNotepadWindow.show(); floatingNotepadWindow.focus(); return true; }
+  floatingNotepadWindow = new BrowserWindow({ width: 430, height: 610, minWidth: 340, minHeight: 420, title: 'الحفظ العائم — Service Hub', alwaysOnTop: true, autoHideMenuBar: true, backgroundColor: '#071f23', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
+  floatingNotepadWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { hash: 'floating-notepad' });
+  floatingNotepadWindow.on('closed', () => { floatingNotepadWindow = null; });
+  return true;
+}
+
 function backupFiles() {
   const files = {};
   const roots = [['remembered-login.json', rememberedLoginPath()]];
@@ -499,6 +536,9 @@ app.whenReady().then(() => {
   ipcMain.handle('scanner:recognize-text', (event, id, language) => recognizeScannerText(id, language, event));
   ipcMain.handle('scanner:delete-image', (_event, id) => deleteScannerImage(id));
   ipcMain.handle('scanner:copy-text', (_event, text) => copyText(text));
+  ipcMain.handle('pdf:choose-folder', () => choosePdfFolder());
+  ipcMain.handle('pdf:read-file', (_event, filePath) => readPdfFile(filePath));
+  ipcMain.handle('open-floating-notepad', () => openFloatingNotepad());
   ipcMain.handle('scanner:export', (_event, request) => exportScannerDocument(request));
   ipcMain.handle('scanner:print', (_event, id) => printScannerDocument(id));
   configureAutoUpdates();
@@ -509,6 +549,7 @@ app.whenReady().then(() => {
     return true;
   });
   createMainWindow();
+  globalShortcut.register('CommandOrControl+Shift+Space', openFloatingNotepad);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createMainWindow(); });
 });
 

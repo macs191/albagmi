@@ -7,6 +7,7 @@ import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
 import { extractScannerFields, normalizeOcrText } from './scanner-text.js';
 import { renderDocuments, bindDocuments } from './documents.js';
 import { renderWebSales, renderWebBanks } from './web-readonly.js';
+import { renderPdfViewer, bindPdfViewer } from './pdf-viewer.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
 const SESSION_KEY = 'albagmi-session-v1';
@@ -44,6 +45,7 @@ let state = loadState();
 let authSession = loadSession();
 let debtRecords = loadDesktopCollection('debts');
 let invoices = loadDesktopCollection('invoices');
+let customers = loadDesktopCollection('customers');
 let scannerDocuments = loadDesktopCollection('scans');
 const publicPageSlug = window.location.pathname.match(/^\/m\/([a-z0-9._-]{3,40})\/?$/i)?.[1]?.toLowerCase() || '';
 let publicOfficeProfile = null;
@@ -78,6 +80,8 @@ let reportDialogEnd = todayKey();
 let recordToDelete = null;
 let toastTimer;
 let desktopSiteResizeObserver;
+let customerFieldDrafts = [{ label: '', value: '' }];
+let editingCustomerId = null;
 let updateStatus = { phase: 'idle', version: '', percent: 0, message: '' };
 let observedDesktopSiteHost = null;
 let desktopSyncFrame = 0;
@@ -133,6 +137,7 @@ function saveSession(session) {
   else sessionStorage.removeItem(SESSION_KEY);
   debtRecords = session?.role === 'client' ? loadDesktopCollection('debts') : [];
   invoices = session?.role === 'client' ? loadDesktopCollection('invoices') : [];
+  customers = session?.role === 'client' ? loadDesktopCollection('customers') : [];
   scannerDocuments = session?.role === 'client' ? loadDesktopCollection('scans') : [];
   selectedScannerDocumentId = scannerDocuments[0]?.id || null;
   scannerPreviewUrl = '';
@@ -245,7 +250,7 @@ function saveState(deletionPassword, immediate = false) {
 
 function getViewFromHash() {
   const hashRoute = window.location.hash.replace(/^#/, '');
-  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'scanner', 'banks', 'debts', 'invoices', 'documents'] : [];
+  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'scanner', 'banks', 'debts', 'invoices', 'documents', 'pdf-viewer', 'customers'] : [];
   const webViews = window.desktopBridge?.syncSiteTabs ? [] : ['banks'];
   return [...desktopViews, ...webViews, 'sales', 'settings'].includes(hashRoute) ? hashRoute : 'home';
 }
@@ -441,6 +446,8 @@ function icon(name, size = 20) {
     star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z"/>',
     wallet: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H19v16H6.5A2.5 2.5 0 0 1 4 17.5z"/><path d="M4 7h15"/><path d="M15 12h5v4h-5a2 2 0 1 1 0-4Z"/>',
     receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6M9 16h3"/>',
+    users: '<circle cx="9" cy="8" r="3"/><path d="M3 20c.4-3.2 2.3-5 6-5s5.6 1.8 6 5M16 5.5a3 3 0 0 1 0 5.8M17 15c2.2.5 3.5 2 4 5"/>',
+    pdf: '<path d="M6 2h9l4 4v16H6z"/><path d="M14 2v5h5M8 15h2a2 2 0 0 0 0-4H8v6M13 17v-6h2a3 3 0 0 1 0 6h-2"/>',
     logout: '<path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M21 19V5a2 2 0 0 0-2-2h-5"/>',
     image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/>',
     calendar: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 9h18"/>',
@@ -466,6 +473,7 @@ function imageMarkup(site, sizeClass = '') {
 
 function render() {
   const root = document.querySelector('#app');
+  if (window.location.hash === '#floating-notepad') { root.innerHTML = renderFloatingNotepad(); bindFloatingNotepad(); return; }
   if (publicPageSlug) {
     if (authSession?.role === 'admin') saveSession(null);
     if (publicOfficeProfile) {
@@ -929,13 +937,13 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' || (!window.desktopBridge?.syncSiteTabs && currentView === 'sales') ? 'active' : ''}" data-nav="home">${icon('sales')}<span>${window.desktopBridge?.syncSiteTabs ? 'الرئيسية' : 'المبيعات'}</span></button>
         ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>` : ''}
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button><button class="nav-item ${currentView === 'documents' ? 'active' : ''}" data-nav="documents">${icon('receipt')}<span>الوثائق والأسعار</span></button>` : `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button>`}
+        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'customers' ? 'active' : ''}" data-nav="customers">${icon('users')}<span>العملاء</span></button><button class="nav-item ${currentView === 'pdf-viewer' ? 'active' : ''}" data-nav="pdf-viewer">${icon('pdf')}<span>عارض PDF</span></button><button class="nav-item" type="button" data-open-floating-notepad>${icon('notepad')}<span>الحفظ العائم</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button><button class="nav-item ${currentView === 'documents' ? 'active' : ''}" data-nav="documents">${icon('receipt')}<span>الوثائق والأسعار</span></button>` : `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button>`}
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? 'الرئيسية' : 'المبيعات') : currentView === 'sales' ? 'المبيعات' : currentView === 'banks' ? 'الحسابات البنكية' : currentView === 'documents' ? 'الوثائق والأسعار' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? renderHome() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'sales' ? (window.desktopBridge?.syncSiteTabs ? renderSales() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'banks' ? (window.desktopBridge?.syncSiteTabs ? renderBanks() : renderWebBanks(state, selectedBankAccountId, bankPeriodMode, bankPeriodDate, bankPeriodMonth)) : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : currentView === 'documents' && window.desktopBridge?.syncSiteTabs ? renderDocuments() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? renderHome() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'sales' ? (window.desktopBridge?.syncSiteTabs ? renderSales() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'banks' ? (window.desktopBridge?.syncSiteTabs ? renderBanks() : renderWebBanks(state, selectedBankAccountId, bankPeriodMode, bankPeriodDate, bankPeriodMonth)) : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : currentView === 'customers' && window.desktopBridge?.syncSiteTabs ? renderCustomers() : currentView === 'pdf-viewer' && window.desktopBridge?.syncSiteTabs ? renderPdfViewer() : currentView === 'documents' && window.desktopBridge?.syncSiteTabs ? renderDocuments() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
@@ -1050,10 +1058,51 @@ function amountInArabic(amount) {
   const main = `${spellArabicNumber(riyals)} ريال سعودي`;
   return halalas ? `${main} و${spellArabicNumber(halalas)} هللة` : main;
 }
+
+function customerValues(customer) {
+  return [['الهاتف', customer.phone], ['رقم الهوية', customer.identity], ['الرقم التسلسلي', customer.serial], ['اسم الدخول', customer.loginUsername], ['بيانات الدخول', customer.loginPassword], ...(customer.extraFields || []).map((field) => [field.label, field.value])].filter(([, value]) => String(value || '').trim());
+}
+function renderCustomerCopyButtons(customer) {
+  return customerValues(customer).map(([label, value]) => `<button class="customer-copy-chip" type="button" data-copy-customer-value="${escapeAttribute(value)}" title="نسخ ${escapeAttribute(label)}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>نسخ</small></button>`).join('');
+}
+function renderCustomers() {
+  const editing = customers.find((item) => item.id === editingCustomerId) || {};
+  const extra = (editing.extraFields || []).map((field) => `${field.label}: ${field.value}`).join('\n');
+  const cards = customers.map((customer) => `<article class="customer-card panel"><header><div><span class="detail-kicker">عميل محفوظ</span><h3>${escapeHtml(customer.name)}</h3></div><div class="customer-card-actions"><button class="icon-btn" type="button" data-edit-customer="${escapeAttribute(customer.id)}">${icon('edit', 17)}</button><button class="icon-btn danger" type="button" data-delete-customer="${escapeAttribute(customer.id)}">${icon('trash', 17)}</button></div></header><div class="customer-copy-grid"><button class="customer-copy-chip" type="button" data-copy-customer-value="${escapeAttribute(customer.name)}"><span>الاسم</span><strong>${escapeHtml(customer.name)}</strong><small>نسخ</small></button>${renderCustomerCopyButtons(customer)}</div><small class="customer-saved-at">تم الحفظ ${escapeHtml(formatDateTime(customer.updatedAt))}</small></article>`).join('');
+  return `<section class="customers-page"><div class="view-title-row"><div><p class="eyebrow">دفتر العملاء</p><h1>العملاء</h1><p class="page-subtitle">احفظ بيانات العملاء مرة واحدة، واضغط أي خانة لنسخها فورًا إلى الحافظة.</p></div><button class="ghost-btn" type="button" data-open-floating-notepad>فتح الحفظ العائم</button></div><div class="customers-layout"><section class="panel customer-form-panel"><div class="panel-heading"><div><p class="eyebrow">${editingCustomerId ? 'تعديل بيانات' : 'عميل جديد'}</p><h2>${editingCustomerId ? 'تعديل العميل' : 'إضافة عميل'}</h2></div></div><form id="customerForm" class="form-grid"><label>اسم العميل<input name="name" required maxlength="160" value="${escapeAttribute(editing.name || '')}"></label><label>رقم الهاتف<input name="phone" maxlength="40" value="${escapeAttribute(editing.phone || '')}"></label><label>رقم الهوية<input name="identity" maxlength="80" value="${escapeAttribute(editing.identity || '')}"></label><label>الرقم التسلسلي<input name="serial" maxlength="120" value="${escapeAttribute(editing.serial || '')}"></label><label>اسم الدخول<input name="loginUsername" maxlength="120" value="${escapeAttribute(editing.loginUsername || '')}"></label><label>بيانات الدخول<input name="loginPassword" maxlength="240" value="${escapeAttribute(editing.loginPassword || '')}"></label><label class="full-span">بيانات إضافية <small>كل سطر بصيغة: اسم الخانة: القيمة</small><textarea name="extraFields" rows="5" placeholder="رقم اللوحة: أ ب ج 1234\nنوع المركبة: سيدان">${escapeHtml(extra)}</textarea></label><button class="primary-btn" type="submit">${editingCustomerId ? 'حفظ تعديل العميل' : 'حفظ العميل'}</button>${editingCustomerId ? '<button class="ghost-btn" type="button" data-cancel-customer-edit>إلغاء</button>' : ''}</form><p class="helper-text">تُحفظ البيانات محليًا على هذا الكمبيوتر، ويمكن نسخ كل خانة بضغطة واحدة. لا تشارك بيانات الدخول إلا على جهاز موثوق.</p></section><section class="customers-list"><div class="panel-heading"><div><p class="eyebrow">المحفوظون</p><h2>قائمة العملاء</h2></div><span class="record-count">${customers.length}</span></div>${cards || '<div class="small-empty">لم تتم إضافة عملاء بعد.</div>'}</section></div></section>`;
+}
+
+function handleCustomerSubmit(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const name = String(form.get('name') || '').trim();
+  if (!name) return showToast('اكتب اسم العميل أولًا.', 'error');
+  const extraFields = String(form.get('extraFields') || '').split('\n').map((line) => line.split(':')).map((parts) => ({ label: String(parts.shift() || '').trim(), value: parts.join(':').trim() })).filter((field) => field.label && field.value);
+  const previous = customers.find((item) => item.id === editingCustomerId);
+  const customer = { id: editingCustomerId || uid('customer'), name, phone: String(form.get('phone') || '').trim(), identity: String(form.get('identity') || '').trim(), serial: String(form.get('serial') || '').trim(), loginUsername: String(form.get('loginUsername') || '').trim(), loginPassword: String(form.get('loginPassword') || '').trim(), extraFields, createdAt: previous?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+  customers = editingCustomerId ? customers.map((item) => item.id === editingCustomerId ? customer : item) : [customer, ...customers];
+  saveDesktopCollection('customers', customers);
+  editingCustomerId = null;
+  showToast('تم حفظ بيانات العميل محليًا.');
+  render();
+}
+
+function renderFloatingNotepad() {
+  const text = localStorage.getItem('servicehub-floating-notepad-v1') || '';
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  return `<main class="floating-notepad-page"><header><div><span class="eyebrow">Service Hub</span><h1>الحفظ العائم</h1></div><button class="icon-btn" type="button" data-floating-copy-all aria-label="نسخ الكل">${icon('copy', 18)}</button></header><p class="helper-text">يعمل فوق البرامج الأخرى. الاختصار: Ctrl + Shift + Space</p><textarea id="floatingNotepadText" placeholder="اكتب أي بيانات تحتاجها للنسخ السريع...">${escapeHtml(text)}</textarea><div class="floating-notepad-actions"><span id="floatingSaveStatus">يُحفظ تلقائيًا</span><button class="primary-btn" type="button" data-floating-copy-all>نسخ الكل</button></div><section class="floating-snippets"><h3>نسخ سريع للسطر</h3>${lines.map((line, index) => `<button type="button" class="floating-snippet" data-floating-copy-line="${escapeAttribute(line)}"><span>${index + 1}</span>${escapeHtml(line)}<small>نسخ</small></button>`).join('') || '<small>اكتب أسطرًا متعددة وستظهر هنا كأزرار نسخ.</small>'}</section></main>`;
+}
+function bindFloatingNotepad() {
+  const input = document.querySelector('#floatingNotepadText');
+  input?.addEventListener('input', () => { localStorage.setItem('servicehub-floating-notepad-v1', input.value); const status = document.querySelector('#floatingSaveStatus'); if (status) status.textContent = 'تم الحفظ تلقائيًا'; });
+  document.querySelectorAll('[data-floating-copy-all]').forEach((button) => button.addEventListener('click', async () => { try { await window.desktopBridge?.copyText?.(input?.value || ''); button.textContent = 'تم النسخ'; setTimeout(() => { button.textContent = 'نسخ الكل'; }, 1000); } catch { /* clipboard unavailable */ } }));
+  document.querySelectorAll('[data-floating-copy-line]').forEach((button) => button.addEventListener('click', () => window.desktopBridge?.copyText?.(button.dataset.floatingCopyLine || '')));
+}
+
 function renderInvoices() {
   const officeName = authSession.account?.officeName || state.officeName || 'المكتب';
   const rows = invoices.map((invoice) => `<article class="invoice-row"><div class="invoice-row-main"><span class="invoice-number">${escapeHtml(invoice.number)}</span><strong>${escapeHtml(invoice.customerName)}</strong><small>${escapeHtml(invoice.serviceDescription)} · ${escapeHtml(formatDateTime(invoice.createdAt))}</small></div><strong class="amount-positive">${formatMoney(invoice.amount)}</strong><div class="invoice-row-actions"><button class="icon-btn" type="button" data-print-invoice="${escapeHtml(invoice.id)}" aria-label="طباعة الفاتورة">${icon('receipt', 17)}</button><button class="icon-btn danger" type="button" data-delete-invoice="${escapeHtml(invoice.id)}" aria-label="حذف الفاتورة">${icon('trash', 17)}</button></div></article>`).join('');
-  return `<section class="desktop-ledger-view"><div class="view-title-row"><div><p class="eyebrow">فاتورة باسم المكتب المسجل: ${escapeHtml(officeName)}</p><h1>الفواتير</h1><p class="page-subtitle">أنشئ فاتورة خدمة واطبعها بتنسيق A4، مع كتابة المبلغ بالأرقام والحروف.</p></div></div><div class="invoice-layout"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">فاتورة جديدة</p><h2>بيانات العميل والخدمة</h2></div></div><form id="invoiceForm" class="form-grid"><label>اسم العميل<input name="customerName" maxlength="120" required autocomplete="off"></label><label>السعر بالريال السعودي<input name="amount" type="number" min="0.01" max="999999999" step="0.01" required inputmode="decimal"></label><label class="full-span">وصف الخدمة المقدمة<textarea name="serviceDescription" rows="3" maxlength="500" required></textarea></label><div class="invoice-preview full-span" id="invoiceAmountPreview">سيظهر السعر كتابةً بالعربية بعد إدخاله.</div><button class="primary-btn full-span" type="submit">${icon('receipt', 17)} إنشاء وحفظ الفاتورة</button></form></section><section class="panel invoice-history"><div class="panel-heading"><div><p class="eyebrow">محفوظة على هذا الجهاز فقط</p><h2>سجل الفواتير</h2></div><span class="record-count">${invoices.length} فاتورة</span></div>${rows || '<div class="small-empty">لا توجد فواتير محفوظة حتى الآن.</div>'}</section></div></section>`;
+  return `<section class="desktop-ledger-view"><div class="view-title-row"><div><p class="eyebrow">فاتورة باسم المكتب المسجل: ${escapeHtml(officeName)}</p><h1>الفواتير</h1><p class="page-subtitle">أنشئ فاتورة خدمة واطبعها بتنسيق A4، مع كتابة المبلغ بالأرقام والحروف.</p></div></div><div class="invoice-layout"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">فاتورة جديدة</p><h2>بيانات العميل والخدمة</h2></div></div><form id="invoiceForm" class="form-grid"><label class="full-span">اختيار عميل محفوظ<select name="customerId" id="invoiceCustomerSelect"><option value="">إدخال اسم العميل يدويًا</option>${customers.map((customer) => `<option value="${escapeAttribute(customer.id)}">${escapeHtml(customer.name)} — ${escapeHtml(customer.phone || customer.identity || 'بيانات محفوظة')}</option>`).join('')}</select></label><label>اسم العميل<input name="customerName" maxlength="120" required autocomplete="off"></label><label>السعر بالريال السعودي<input name="amount" type="number" min="0.01" max="999999999" step="0.01" required inputmode="decimal"></label><label class="full-span">وصف الخدمة المقدمة<textarea name="serviceDescription" rows="3" maxlength="500" required></textarea></label><div class="invoice-preview full-span" id="invoiceAmountPreview">سيظهر السعر كتابةً بالعربية بعد إدخاله.</div><button class="primary-btn full-span" type="submit">${icon('receipt', 17)} إنشاء وحفظ الفاتورة</button></form></section><section class="panel invoice-history"><div class="panel-heading"><div><p class="eyebrow">محفوظة على هذا الجهاز فقط</p><h2>سجل الفواتير</h2></div><span class="record-count">${invoices.length} فاتورة</span></div>${rows || '<div class="small-empty">لا توجد فواتير محفوظة حتى الآن.</div>'}</section></div></section>`;
 }
 
 function printInvoice(invoice) {
@@ -1338,6 +1387,7 @@ function bindViewEvents() {
     render();
   }));
   document.querySelector('#invoiceForm')?.addEventListener('submit', handleInvoiceSubmit);
+  document.querySelector('#invoiceCustomerSelect')?.addEventListener('change', (event) => { const customer = customers.find((item) => item.id === event.target.value); const input = document.querySelector('#invoiceForm input[name="customerName"]'); if (input && customer) input.value = customer.name; });
   document.querySelector('#invoiceForm input[name="amount"]')?.addEventListener('input', (event) => {
     const preview = document.querySelector('#invoiceAmountPreview');
     preview.textContent = event.currentTarget.value ? `كتابةً: ${amountInArabic(event.currentTarget.value)} لا غير.` : 'سيظهر السعر كتابةً بالعربية بعد إدخاله.';
@@ -1352,6 +1402,15 @@ function bindViewEvents() {
     saveDesktopCollection('invoices', invoices);
     render();
   }));
+  if (currentView === 'customers' && window.desktopBridge?.syncSiteTabs) {
+    document.querySelector('#customerForm')?.addEventListener('submit', handleCustomerSubmit);
+    document.querySelector('[data-cancel-customer-edit]')?.addEventListener('click', () => { editingCustomerId = null; render(); });
+    document.querySelectorAll('[data-edit-customer]').forEach((button) => button.addEventListener('click', () => { editingCustomerId = button.dataset.editCustomer; render(); }));
+    document.querySelectorAll('[data-delete-customer]').forEach((button) => button.addEventListener('click', () => { if (!window.confirm('حذف بيانات العميل؟')) return; customers = customers.filter((item) => item.id !== button.dataset.deleteCustomer); saveDesktopCollection('customers', customers); render(); }));
+    document.querySelectorAll('[data-copy-customer-value]').forEach((button) => button.addEventListener('click', async () => { try { await window.desktopBridge?.copyText?.(button.dataset.copyCustomerValue || ''); showToast('تم نسخ البيانات.'); } catch { showToast('تعذر نسخ البيانات.', 'error'); } }));
+  }
+  if (currentView === 'pdf-viewer' && window.desktopBridge?.syncSiteTabs) bindPdfViewer(render);
+  document.querySelectorAll('[data-open-floating-notepad]').forEach((button) => button.addEventListener('click', () => window.desktopBridge?.openFloatingNotepad?.()));
   document.querySelector('#clearNotepad')?.addEventListener('click', () => {
     if (!notepadText || !window.confirm('هل تريد مسح كل محتوى المفكرة من هذا الجهاز؟')) return;
     notepadText = '';
@@ -1449,12 +1508,13 @@ function handleDebtSubmit(event) {
 function handleInvoiceSubmit(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  const customerId = String(form.get('customerId') || '').trim();
   const customerName = String(form.get('customerName') || '').trim();
   const serviceDescription = String(form.get('serviceDescription') || '').trim();
   const amount = Number(form.get('amount'));
   if (!customerName || !serviceDescription || !Number.isFinite(amount) || amount <= 0 || amount > 999999999) return showToast('تحقق من اسم العميل ووصف الخدمة والسعر.', 'error');
   const createdAt = new Date().toISOString();
-  const invoice = { id: uid('invoice'), number: `INV-${todayKey().replaceAll('-', '')}-${Date.now()}`, customerName, serviceDescription, amount: Math.round(amount * 100) / 100, createdAt, officeName: authSession.account?.officeName || state.officeName || 'المكتب' };
+  const invoice = { id: uid('invoice'), number: `INV-${todayKey().replaceAll('-', '')}-${Date.now()}`, customerId: customerId || null, customerName, serviceDescription, amount: Math.round(amount * 100) / 100, createdAt, officeName: authSession.account?.officeName || state.officeName || 'المكتب' };
   invoices.unshift(invoice);
   saveDesktopCollection('invoices', invoices);
   showToast('تم إنشاء الفاتورة وحفظها على هذا الجهاز.');
