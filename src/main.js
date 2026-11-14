@@ -250,9 +250,12 @@ function saveState(deletionPassword, immediate = false) {
 
 function getViewFromHash() {
   const hashRoute = window.location.hash.replace(/^#/, '');
-  const desktopViews = window.desktopBridge?.syncSiteTabs ? ['notepad', 'scanner', 'banks', 'debts', 'invoices', 'documents', 'pdf-viewer', 'customers'] : [];
+  const desktopViews = isDesktopRuntime() ? ['notepad', 'scanner', 'banks', 'debts', 'invoices', 'documents', 'pdf-viewer', 'customers'] : [];
   const webViews = window.desktopBridge?.syncSiteTabs ? [] : ['banks'];
   return [...desktopViews, ...webViews, 'sales', 'settings'].includes(hashRoute) ? hashRoute : 'home';
+}
+function isDesktopRuntime() {
+  return Boolean(window.desktopBridge?.syncSiteTabs || window.location.protocol === 'file:');
 }
 
 function notepadStorageKey() {
@@ -943,13 +946,13 @@ function renderShell() {
         <button class="nav-item ${currentView === 'home' || (!window.desktopBridge?.syncSiteTabs && currentView === 'sales') ? 'active' : ''}" data-nav="home">${icon('sales')}<span>${window.desktopBridge?.syncSiteTabs ? 'الرئيسية' : 'المبيعات'}</span></button>
         ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>` : ''}
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
-        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'customers' ? 'active' : ''}" data-nav="customers">${icon('users')}<span>العملاء</span></button><button class="nav-item ${currentView === 'pdf-viewer' ? 'active' : ''}" data-nav="pdf-viewer">${icon('pdf')}<span>عارض PDF</span></button><button class="nav-item" type="button" data-open-floating-notepad>${icon('notepad')}<span>الحفظ العائم</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button><button class="nav-item ${currentView === 'documents' ? 'active' : ''}" data-nav="documents">${icon('receipt')}<span>الوثائق والأسعار</span></button>` : `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button>`}
+        ${isDesktopRuntime() ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'customers' ? 'active' : ''}" data-nav="customers">${icon('users')}<span>العملاء</span></button><button class="nav-item ${currentView === 'pdf-viewer' ? 'active' : ''}" data-nav="pdf-viewer">${icon('pdf')}<span>عارض PDF</span></button><button class="nav-item" type="button" data-open-floating-notepad>${icon('notepad')}<span>الحفظ العائم</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button><button class="nav-item ${currentView === 'documents' ? 'active' : ''}" data-nav="documents">${icon('receipt')}<span>الوثائق والأسعار</span></button>` : `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button>`}
       </nav>
       ${window.desktopBridge?.syncSiteTabs ? `<section class="sidebar-account"><span class="sidebar-account-label">الحساب</span><strong>${escapeHtml(authSession.account?.username || '')}</strong><small>${escapeHtml(authSession.account?.phone || '')}</small><button class="sidebar-logout" data-logout>${icon('logout', 17)}<span>تسجيل الخروج</span></button></section>` : '<div class="sidebar-footer"><span class="status-dot"></span> البيانات محفوظة في Supabase</div>'}
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? 'الرئيسية' : 'المبيعات') : currentView === 'sales' ? 'المبيعات' : currentView === 'banks' ? 'الحسابات البنكية' : currentView === 'documents' ? 'الوثائق والأسعار' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? renderHome() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'sales' ? (window.desktopBridge?.syncSiteTabs ? renderSales() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'banks' ? (window.desktopBridge?.syncSiteTabs ? renderBanks() : renderWebBanks(state, selectedBankAccountId, bankPeriodMode, bankPeriodDate, bankPeriodMonth)) : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : currentView === 'customers' && window.desktopBridge?.syncSiteTabs ? renderCustomers() : currentView === 'pdf-viewer' && window.desktopBridge?.syncSiteTabs ? renderPdfViewer() : currentView === 'documents' && window.desktopBridge?.syncSiteTabs ? renderDocuments() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? renderHome() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'sales' ? (window.desktopBridge?.syncSiteTabs ? renderSales() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'banks' ? (window.desktopBridge?.syncSiteTabs ? renderBanks() : renderWebBanks(state, selectedBankAccountId, bankPeriodMode, bankPeriodDate, bankPeriodMonth)) : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : currentView === 'customers' && isDesktopRuntime() ? renderCustomers() : currentView === 'pdf-viewer' && window.desktopBridge?.syncSiteTabs ? renderPdfViewer() : currentView === 'documents' && window.desktopBridge?.syncSiteTabs ? renderDocuments() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }
@@ -1326,7 +1329,13 @@ function bindViewEvents() {
   document.querySelector('[data-logout]')?.addEventListener('click', () => logout());
   document.querySelector('[data-backup-local]')?.addEventListener('click', async () => { try { const result = await window.desktopBridge?.backupLocalData?.(Object.fromEntries(Object.entries(localStorage))); if (result?.filename) showToast(`تم حفظ النسخة الاحتياطية: ${result.filename}`); } catch (error) { showToast(error.message || 'تعذر إنشاء النسخة الاحتياطية.', 'error'); } });
   document.querySelector('[data-restore-local]')?.addEventListener('click', async () => { if (!window.confirm('سيتم استبدال البيانات المحلية الحالية بالنسخة المختارة. هل تريد المتابعة؟')) return; try { const result = await window.desktopBridge?.restoreLocalData?.(); if (result?.restored) { for (const key of Object.keys(localStorage)) localStorage.removeItem(key); for (const [key, value] of Object.entries(result.localStorage || {})) localStorage.setItem(key, String(value)); showToast('تمت الاستعادة. سيعاد تشغيل البرنامج الآن.'); setTimeout(() => window.location.reload(), 900); } } catch (error) { showToast(error.message || 'تعذر استعادة النسخة الاحتياطية.', 'error'); } });
-  document.querySelectorAll('[data-nav]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.nav)));
+  if (!window.__serviceHubNavigationBound) {
+    window.__serviceHubNavigationBound = true;
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-nav]');
+      if (button?.dataset.nav) { event.preventDefault(); navigate(button.dataset.nav); }
+    });
+  }
   document.querySelector('#salesDate')?.addEventListener('change', (event) => { selectedSalesDate = event.target.value || todayKey(); render(); });
   for (const prefix of ['transaction', 'expense']) {
     document.querySelector(`#${prefix}PaymentMethod`)?.addEventListener('change', () => updatePaymentMethodField(prefix));
@@ -1426,7 +1435,7 @@ function bindViewEvents() {
     saveDesktopCollection('invoices', invoices);
     render();
   }));
-  if (currentView === 'customers' && window.desktopBridge?.syncSiteTabs) {
+  if (currentView === 'customers' && isDesktopRuntime()) {
     document.querySelector('#customerForm')?.addEventListener('submit', handleCustomerSubmit);
     document.querySelector('[data-cancel-customer-edit]')?.addEventListener('click', () => { editingCustomerId = null; render(); });
     document.querySelectorAll('[data-edit-customer]').forEach((button) => button.addEventListener('click', () => { editingCustomerId = button.dataset.editCustomer; render(); }));

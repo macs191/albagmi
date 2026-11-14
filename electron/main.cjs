@@ -360,8 +360,8 @@ function readPdfFile(filePath) {
 function openFloatingNotepad() {
   if (floatingNotepadWindow && !floatingNotepadWindow.isDestroyed()) { floatingNotepadWindow.show(); floatingNotepadWindow.focus(); return true; }
   floatingNotepadWindow = new BrowserWindow({ width: 430, height: 610, minWidth: 340, minHeight: 420, title: 'الحفظ العائم — Service Hub', alwaysOnTop: true, autoHideMenuBar: true, backgroundColor: '#071f23', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
-  const floatingIndex = path.join(__dirname, '..', 'dist', 'index.html');
-  floatingNotepadWindow.loadURL(`${pathToFileURL(floatingIndex).toString()}#floating-notepad`);
+  const floatingIndex = path.join(__dirname, 'floating.html');
+  floatingNotepadWindow.loadURL(pathToFileURL(floatingIndex).toString());
   floatingNotepadWindow.on('closed', () => { floatingNotepadWindow = null; });
   return true;
 }

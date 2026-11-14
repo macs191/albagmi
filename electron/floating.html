@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>الحفظ العائم — Service Hub</title>
+  <style>
+    :root{color-scheme:dark;font-family:Tahoma,Arial,sans-serif;background:#071f23;color:#e8f7f1}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#092b2d,#07161b);min-height:100vh}.app{padding:18px;display:grid;gap:14px}.head,.hero,.actions,.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.eyebrow{color:#75d9b4;font-size:11px;letter-spacing:.05em}.head h1{font-size:23px;margin:5px 0}.hero{padding:13px;border:1px solid #24494a;border-radius:14px;background:#103638}.hero strong{display:block;font-size:16px}.hero span,.muted,small{color:#a6c3bc;font-size:11px}.button{border:0;border-radius:10px;padding:10px 13px;cursor:pointer;font:inherit}.primary{background:#42c797;color:#06251e;font-weight:700}.ghost{background:#173f40;color:#dff7ee}.danger{color:#ffb2aa;background:transparent}.cards{display:grid;gap:11px}.card{border:1px solid #285252;border-radius:14px;background:#0e3033;padding:12px}.card-copy{display:block;width:100%;border:0;background:transparent;color:#e8f7f1;text-align:right;cursor:pointer;padding:0}.card-copy strong{display:block;color:#7be0bb;margin-bottom:7px}.card-copy p{white-space:pre-wrap;word-break:break-word;margin:0;line-height:1.8}.card-actions{display:flex;gap:7px;margin-top:10px}.form{display:grid;gap:10px;background:#0e3033;border:1px solid #285252;border-radius:14px;padding:13px}.form label{display:grid;gap:6px;color:#b9d7ce;font-size:12px}.form input,.form textarea{font:inherit;color:#193b36;background:#fff;border:0;border-radius:8px;padding:10px;outline:0}.empty{text-align:center;padding:35px 10px;border:1px dashed #376566;border-radius:14px;color:#b3cec7}.toast{position:fixed;bottom:14px;left:14px;right:14px;text-align:center;background:#42c797;color:#06251e;padding:10px;border-radius:10px;font-size:12px}.hidden{display:none}
+  </style>
+</head>
+<body>
+<main class="app" id="app"></main>
+<script>
+(() => {
+  const key='servicehub-floating-cards-v1'; let cards=[]; let editingId=null;
+  const app=document.querySelector('#app');
+  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const load=()=>{try{const v=JSON.parse(localStorage.getItem(key)||'[]');cards=Array.isArray(v)?v.filter(x=>x&&x.id):[]}catch{cards=[]}};
+  const save=()=>localStorage.setItem(key,JSON.stringify(cards));
+  const notify=t=>{const old=document.querySelector('.toast');old?.remove();const x=document.createElement('div');x.className='toast';x.textContent=t;document.body.append(x);setTimeout(()=>x.remove(),2200)};
+  const copy=async text=>{try{if(window.desktopBridge?.copyText)await window.desktopBridge.copyText(text);else await navigator.clipboard.writeText(text);notify('تم نسخ النص');}catch{notify('تعذر النسخ إلى الحافظة')}};
+  function draw(){
+    const edit=cards.find(x=>x.id===editingId);
+    app.innerHTML=`<header class="head"><div><div class="eyebrow">Service Hub · Quick Save</div><h1>الحفظ العائم</h1></div><button class="button ghost" data-copy-all>نسخ الكل</button></header><section class="hero"><div><strong>${cards.length} زر محفوظ</strong><span>اضغط الزر لنسخ النص فورًا</span></div><button class="button primary" data-new>+ إضافة زر</button></section><div class="muted">تعمل هذه النافذة مستقلة عن الصفحة الرئيسية · Ctrl + Shift + Space</div>${edit?`<form class="form" id="form"><label>اسم الزر<input name="title" required maxlength="80" value="${esc(edit.title)}"></label><label>النص<textarea name="text" required maxlength="5000" rows="5">${esc(edit.text)}</textarea></label><div><button class="button primary">حفظ</button><button class="button ghost" type="button" data-cancel>إلغاء</button></div></form>`:''}<section class="cards">${cards.length?cards.map((x,i)=>`<article class="card"><button class="card-copy" data-copy="${esc(x.id)}"><strong>${esc(x.title)} · Ctrl + ${i+1}</strong><p>${esc(x.text)}</p><small>اضغط للنسخ</small></button><div class="card-actions"><button class="button ghost" data-edit="${esc(x.id)}">تعديل</button><button class="button danger" data-delete="${esc(x.id)}">حذف</button></div></article>`).join(''):'<div class="empty">لا توجد نصوص محفوظة بعد.<br>اضغط «إضافة زر» لبدء الحفظ.</div>'}</section>`;
+    app.querySelector('[data-new]')?.addEventListener('click',()=>{const id='card-'+Date.now();cards.push({id,title:'',text:''});save();editingId=id;draw();app.querySelector('input')?.focus()});
+    app.querySelector('[data-cancel]')?.addEventListener('click',()=>{cards=cards.filter(x=>x.title&&x.text);save();editingId=null;draw()});
+    app.querySelector('#form')?.addEventListener('submit',e=>{e.preventDefault();const f=new FormData(e.currentTarget),x=cards.find(x=>x.id===editingId);if(!x)return;x.title=String(f.get('title')||'').trim();x.text=String(f.get('text')||'').trim();if(!x.title||!x.text){notify('اكتب الاسم والنص أولًا');return}save();editingId=null;draw();notify('تم حفظ الزر')});
+    app.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',()=>{const x=cards.find(x=>x.id===b.dataset.copy);if(x)copy(x.text)}));
+    app.querySelectorAll('[data-edit]').forEach(b=>b.addEventListener('click',()=>{editingId=b.dataset.edit;draw();app.querySelector('input')?.focus()}));
+    app.querySelectorAll('[data-delete]').forEach(b=>b.addEventListener('click',()=>{if(!confirm('حذف هذا الزر؟'))return;cards=cards.filter(x=>x.id!==b.dataset.delete);save();if(editingId===b.dataset.delete)editingId=null;draw()}));
+    app.querySelector('[data-copy-all]')?.addEventListener('click',()=>copy(cards.map(x=>x.text).join('\n\n')));
+  }
+  document.addEventListener('keydown',e=>{if(!(e.ctrlKey||e.metaKey)||e.altKey||e.shiftKey)return;const n=Number(e.key);if(n<1||n>9||!cards[n-1])return;e.preventDefault();copy(cards[n-1].text)});
+  load();draw();
+})();
+</script>
+</body>
+</html>
