@@ -1,5 +1,6 @@
 const { app, BrowserWindow, WebContentsView, ipcMain, session, safeStorage, Menu, clipboard, dialog, globalShortcut } = require('electron');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
@@ -359,7 +360,8 @@ function readPdfFile(filePath) {
 function openFloatingNotepad() {
   if (floatingNotepadWindow && !floatingNotepadWindow.isDestroyed()) { floatingNotepadWindow.show(); floatingNotepadWindow.focus(); return true; }
   floatingNotepadWindow = new BrowserWindow({ width: 430, height: 610, minWidth: 340, minHeight: 420, title: 'الحفظ العائم — Service Hub', alwaysOnTop: true, autoHideMenuBar: true, backgroundColor: '#071f23', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
-  floatingNotepadWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), { hash: 'floating-notepad' });
+  const floatingIndex = path.join(__dirname, '..', 'dist', 'index.html');
+  floatingNotepadWindow.loadURL(`${pathToFileURL(floatingIndex).toString()}#floating-notepad`);
   floatingNotepadWindow.on('closed', () => { floatingNotepadWindow = null; });
   return true;
 }
