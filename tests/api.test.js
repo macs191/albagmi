@@ -674,7 +674,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   const preload = await readFile(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
   const appSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
   const workflow = await readFile(new URL('../.github/workflows/windows-installer.yml', import.meta.url), 'utf8');
-  assert.equal(packageJson.version, '0.1.28');
+  assert.equal(packageJson.version, '0.1.29');
   assert.deepEqual(packageJson.build.publish[0], { provider: 'github', owner: 'macs191', repo: 'albagmi', releaseType: 'release' });
   assert.doesNotMatch(appSource, /تثبيت Windows|ServiceHub-Desktop-0\.1\.6-Setup\.exe/);
   assert.match(appSource, /data-nav="notepad"/);
@@ -715,7 +715,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /install-update/);
   assert.match(appSource, /data-install-update/);
   assert.match(appSource, /update-progress/);
-  assert.match(workflow, /v0\.1\.28/);
+  assert.match(workflow, /v0\.1\.29/);
   assert.match(workflow, /latest\.yml/);
   assert.match(workflow, /\.blockmap/);
   assert.match(appSource, /data-nav="debts"/);
@@ -800,6 +800,16 @@ test('identity OCR does not mistake phone numbers or expiry dates for requested 
   assert.deepEqual(extractScannerFields('Phone: +966 55 123 4567\nتاريخ الانتهاء: 2030/04/15'), {
     identityNumber: '', birthDate: '', serialNumber: ''
   });
+});
+
+
+test('customer workspace includes linked account statement, invoices and debts', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(source, /function customerFinancials\(customer\)/);
+  assert.match(source, /data-open-customer-invoice/);
+  assert.match(source, /data-open-customer-debt/);
+  assert.match(source, /id: uid\('debt'\), customerId/);
+  assert.match(source, /customerId: customerId \|\| null/);
 });
 
 test('scanner OCR falls back to original BMP bytes when Sharp does not support the scan format', async () => {
