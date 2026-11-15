@@ -361,7 +361,12 @@ function openFloatingNotepad() {
   if (floatingNotepadWindow && !floatingNotepadWindow.isDestroyed()) { floatingNotepadWindow.show(); floatingNotepadWindow.focus(); return true; }
   floatingNotepadWindow = new BrowserWindow({ width: 430, height: 610, minWidth: 340, minHeight: 420, title: 'الحفظ العائم — Service Hub', alwaysOnTop: true, autoHideMenuBar: true, backgroundColor: '#071f23', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
   const floatingIndex = path.join(__dirname, 'floating.html');
-  floatingNotepadWindow.loadURL(pathToFileURL(floatingIndex).toString());
+  floatingNotepadWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => console.warn(`[Floating Clipboard ${level}] ${sourceId}:${line} ${message}`));
+  floatingNotepadWindow.webContents.on('render-process-gone', (_event, details) => console.warn('[Floating Clipboard] renderer stopped:', details?.reason || 'unknown'));
+  floatingNotepadWindow.webContents.on('did-fail-load', (_event, code, description) => {
+    if (floatingNotepadWindow && !floatingNotepadWindow.isDestroyed()) floatingNotepadWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<body style="font-family:Tahoma;direction:rtl;padding:24px;background:#071f23;color:#e8f7f1"><h2>تعذر فتح الحفظ العائم</h2><p>${escapeHtml(description || `رمز الخطأ ${code}`)}</p><p>أغلق النافذة وأعد فتحها.</p></body>`)}`).catch(() => {});
+  });
+  floatingNotepadWindow.loadFile(floatingIndex).catch((error) => console.warn('Could not load floating clipboard:', error?.message || error));
   floatingNotepadWindow.on('closed', () => { floatingNotepadWindow = null; });
   return true;
 }
