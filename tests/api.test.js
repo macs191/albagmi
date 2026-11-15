@@ -715,7 +715,7 @@ test('Desktop packaging, browser tabs, and service persistence use the intended 
   assert.match(electronMain, /install-update/);
   assert.match(appSource, /data-install-update/);
   assert.match(appSource, /update-progress/);
-  assert.match(workflow, /v0\.1\.29/);
+  assert.match(workflow, /v0\.1\.30/);
   assert.match(workflow, /latest\.yml/);
   assert.match(workflow, /\.blockmap/);
   assert.match(appSource, /data-nav="debts"/);
