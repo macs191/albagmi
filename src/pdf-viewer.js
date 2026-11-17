@@ -1,6 +1,12 @@
-import * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+let pdfjsLib = null;
+let pdfjsLoading = null;
+function ensurePdfJs() {
+  if (!Uint8Array.prototype.toHex) {
+    Object.defineProperty(Uint8Array.prototype, 'toHex', { configurable: true, value() { return Array.from(this, (byte) => byte.toString(16).padStart(2, '0')).join(''); } });
+  }
+  if (!pdfjsLoading) pdfjsLoading = import('pdfjs-dist/build/pdf.mjs').then((module) => { pdfjsLib = module; pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString(); return pdfjsLib; });
+  return pdfjsLoading;
+}
 
 let folderName = '';
 let folderPath = '';
@@ -42,7 +48,7 @@ async function extractPageText(page) {
   return content.items.map((item) => item.str || '').join(' ').replace(/\s+/g, ' ').trim();
 }
 async function renderPage() {
-  if (!pdfDocument) return;
+  if (!pdfDocument || !pdfjsLib) return;
   const page = await pdfDocument.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1.35 });
   const canvas = document.querySelector('#pdfCanvas');
@@ -74,10 +80,11 @@ async function ocrCurrentPage(render) {
 async function openFile(path, render) {
   selectedPath = path; pageNumber = 1; pageText = ''; editedText = ''; pdfDocument = null; loading = true; render();
   try {
+    await ensurePdfJs();
     const result = await window.desktopBridge.readPdfFile(path);
     const binary = atob(result.data.split(',')[1]);
     const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    pdfDocument = await pdfjsLib.getDocument({ data: bytes }).promise;
+    pdfDocument = await pdfjsLib.getDocument({ data: bytes, disableWorker: true }).promise;
     loading = false; render(); await renderPage();
   } catch (error) { loading = false; render(); showToast(error.message || 'تعذر فتح ملف PDF.', 'error'); }
 }
