@@ -6,7 +6,7 @@ import { bankBalance, bankLedger, filterBankLedger } from './banks.js';
 import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
 import { extractScannerFields, normalizeOcrText } from './scanner-text.js';
 import { renderDocuments, bindDocuments } from './documents.js';
-import { renderWebSales, renderWebBanks } from './web-readonly.js';
+import { renderWebSales, renderWebBanks, renderWebDebts, renderWebInvoices } from './web-readonly.js';
 import { renderPdfViewer, bindPdfViewer } from './pdf-viewer.js';
 
 const STORAGE_KEY = 'servicehub-desktop-v1';
@@ -184,6 +184,10 @@ function loadDesktopCollection(name) {
 
 function saveDesktopCollection(name, collection) {
   localStorage.setItem(desktopCollectionKey(name), JSON.stringify(collection));
+  if (['debts', 'invoices', 'customers'].includes(name)) {
+    state[name] = Array.isArray(collection) ? collection : [];
+    if (authSession?.role === 'client') saveState();
+  }
 }
 
 function userStateCacheKey() {
@@ -203,11 +207,17 @@ function applyAccountState(accountState) {
       transactions: Array.isArray(saved.transactions) ? saved.transactions : [],
       expenses: Array.isArray(saved.expenses) ? saved.expenses : [],
       bankAccounts: Array.isArray(saved.bankAccounts) ? saved.bankAccounts : [],
-      bankOperations: Array.isArray(saved.bankOperations) ? saved.bankOperations : []
+      bankOperations: Array.isArray(saved.bankOperations) ? saved.bankOperations : [],
+      debts: Array.isArray(saved.debts) ? saved.debts : loadDesktopCollection('debts'),
+      invoices: Array.isArray(saved.invoices) ? saved.invoices : loadDesktopCollection('invoices'),
+      customers: Array.isArray(saved.customers) ? saved.customers : loadDesktopCollection('customers')
     };
   } else {
-    state = { ...structuredClone(initialState), officeName: authSession?.account?.officeName || authSession?.account?.office_name || initialState.officeName };
+    state = { ...structuredClone(initialState), officeName: authSession?.account?.officeName || authSession?.account?.office_name || initialState.officeName, debts: loadDesktopCollection('debts'), invoices: loadDesktopCollection('invoices'), customers: loadDesktopCollection('customers') };
   }
+  if (Array.isArray(state.debts)) { debtRecords = state.debts; saveDesktopCollection('debts', debtRecords); }
+  if (Array.isArray(state.invoices)) { invoices = state.invoices; saveDesktopCollection('invoices', invoices); }
+  if (Array.isArray(state.customers)) { customers = state.customers; saveDesktopCollection('customers', customers); }
   localStorage.setItem(userStateCacheKey(), JSON.stringify(state));
 }
 
@@ -278,7 +288,7 @@ function saveState(deletionPassword, immediate = false) {
 function getViewFromHash() {
   const hashRoute = window.location.hash.replace(/^#/, '');
   const desktopViews = isDesktopRuntime() ? ['notepad', 'scanner', 'banks', 'debts', 'invoices', 'documents', 'pdf-viewer', 'customers'] : [];
-  const webViews = window.desktopBridge?.syncSiteTabs ? [] : ['banks'];
+  const webViews = window.desktopBridge?.syncSiteTabs ? [] : ['banks', 'debts', 'invoices'];
   return [...desktopViews, ...webViews, 'sales', 'settings'].includes(hashRoute) ? hashRoute : 'home';
 }
 function isDesktopRuntime() {
@@ -976,7 +986,7 @@ function renderShell() {
       <section class="sidebar-office"><strong>${escapeHtml(authSession.account?.officeName || state.officeName)}</strong><span>${escapeHtml(authSession.account?.ownerName || '')}</span></section>
       <nav class="main-nav" aria-label="التنقل الرئيسي">
         <button class="nav-item ${currentView === 'home' || (!window.desktopBridge?.syncSiteTabs && currentView === 'sales') ? 'active' : ''}" data-nav="home">${icon('sales')}<span>${window.desktopBridge?.syncSiteTabs ? 'الرئيسية' : 'المبيعات'}</span></button>
-        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>` : ''}
+        ${window.desktopBridge?.syncSiteTabs ? `<button class="nav-item ${currentView === 'sales' ? 'active' : ''}" data-nav="sales">${icon('sales')}<span>المبيعات</span></button>` : `<button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button>`}
         <button class="nav-item ${currentView === 'settings' ? 'active' : ''}" data-nav="settings">${icon('settings')}<span>الإعدادات</span></button>
         ${isDesktopRuntime() ? `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button><button class="nav-item ${currentView === 'debts' ? 'active' : ''}" data-nav="debts">${icon('wallet')}<span>المديونيات</span></button><button class="nav-item ${currentView === 'invoices' ? 'active' : ''}" data-nav="invoices">${icon('receipt')}<span>الفواتير</span></button><button class="nav-item ${currentView === 'customers' ? 'active' : ''}" data-nav="customers">${icon('users')}<span>العملاء</span></button><button class="nav-item ${currentView === 'pdf-viewer' ? 'active' : ''}" data-nav="pdf-viewer">${icon('pdf')}<span>عارض PDF</span></button><button class="nav-item" type="button" data-open-floating-notepad>${icon('notepad')}<span>الحفظ العائم</span></button><button class="nav-item ${currentView === 'notepad' ? 'active' : ''}" data-nav="notepad">${icon('notepad')}<span>Notepad</span></button><button class="nav-item ${currentView === 'scanner' ? 'active' : ''}" data-nav="scanner">${icon('scanner')}<span>الماسح</span></button><button class="nav-item ${currentView === 'documents' ? 'active' : ''}" data-nav="documents">${icon('receipt')}<span>الوثائق والأسعار</span></button>` : `<button class="nav-item ${currentView === 'banks' ? 'active' : ''}" data-nav="banks">${icon('bank')}<span>الحسابات البنكية</span></button>`}
       </nav>
@@ -984,7 +994,7 @@ function renderShell() {
     </aside>
     <main class="main-content">
       ${window.desktopBridge?.syncSiteTabs ? renderSiteTabsBar() : `<header class="topbar"><div class="breadcrumb"><span>Service Hub</span><b>/</b><strong>${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? 'الرئيسية' : 'المبيعات') : currentView === 'sales' ? 'المبيعات' : currentView === 'banks' ? 'الحسابات البنكية' : currentView === 'documents' ? 'الوثائق والأسعار' : 'الإعدادات'}</strong></div><div class="topbar-actions"><span class="live-badge"><i></i>${escapeHtml(authSession.account?.username || '')}</span><button class="ghost-btn" data-logout>خروج</button><button class="icon-btn" data-nav="settings" aria-label="الإعدادات">${icon('settings', 18)}</button></div></header>`}
-      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? renderHome() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'sales' ? (window.desktopBridge?.syncSiteTabs ? renderSales() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'banks' ? (window.desktopBridge?.syncSiteTabs ? renderBanks() : renderWebBanks(state, selectedBankAccountId, bankPeriodMode, bankPeriodDate, bankPeriodMonth)) : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'debts' && window.desktopBridge?.syncSiteTabs ? renderDebts() : currentView === 'invoices' && window.desktopBridge?.syncSiteTabs ? renderInvoices() : currentView === 'customers' && isDesktopRuntime() ? renderCustomers() : currentView === 'pdf-viewer' && window.desktopBridge?.syncSiteTabs ? renderPdfViewer() : currentView === 'documents' && window.desktopBridge?.syncSiteTabs ? renderDocuments() : renderSettings()}</div>`}
+      ${activeSiteTabId ? renderActiveSiteTab() : `<div class="page-container ${currentView === 'home' ? 'home-page-container' : ''}">${subscriptionWarning()}${currentView === 'home' ? (window.desktopBridge?.syncSiteTabs ? renderHome() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'sales' ? (window.desktopBridge?.syncSiteTabs ? renderSales() : renderWebSales(state, selectedSalesDate, todayKey)) : currentView === 'banks' ? (window.desktopBridge?.syncSiteTabs ? renderBanks() : renderWebBanks(state, selectedBankAccountId, bankPeriodMode, bankPeriodDate, bankPeriodMonth)) : currentView === 'debts' ? (window.desktopBridge?.syncSiteTabs ? renderDebts() : renderWebDebts(state)) : currentView === 'invoices' ? (window.desktopBridge?.syncSiteTabs ? renderInvoices() : renderWebInvoices(state)) : currentView === 'notepad' && window.desktopBridge?.syncSiteTabs ? renderNotepad() : currentView === 'scanner' && window.desktopBridge?.syncSiteTabs ? renderScanner() : currentView === 'customers' && isDesktopRuntime() ? renderCustomers() : currentView === 'pdf-viewer' && window.desktopBridge?.syncSiteTabs ? renderPdfViewer() : currentView === 'documents' && window.desktopBridge?.syncSiteTabs ? renderDocuments() : renderSettings()}</div>`}
     </main>
   </div>${reportDialogMode ? renderReportDialog() : ''}${recordToDelete ? renderRecordDeleteDialog() : ''}`;
 }

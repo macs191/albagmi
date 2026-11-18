@@ -936,3 +936,29 @@ h3 { margin-bottom: 8px; font-size: 18px; }
 .customer-card-open h3 { margin:4px 0; }
 .customer-card-open:focus-visible { outline:2px solid var(--accent); outline-offset:5px; }
 @media (max-width:700px) { .customer-ledger-row { align-items:flex-start; flex-direction:column; } .customer-ledger-row > strong { align-self:flex-end; } .customer-statement { padding:14px; } }
+
+/* Mobile web dashboard */
+.web-kpi-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.web-kpi-strip article { position: relative; overflow: hidden; min-width: 0; padding: 17px 16px; border: 1px solid rgba(110, 208, 180, .13); border-radius: 16px; background: linear-gradient(145deg, rgba(19, 58, 60, .98), rgba(10, 35, 42, .98)); box-shadow: 0 12px 24px rgba(1, 15, 21, .12); }
+.web-kpi-strip article::after { content: ''; position: absolute; width: 85px; height: 85px; left: -35px; bottom: -52px; border: 1px solid rgba(128, 225, 194, .14); border-radius: 50%; box-shadow: 0 0 0 13px rgba(128, 225, 194, .035); }
+.web-kpi-strip span, .web-kpi-strip small, .web-kpi-strip strong { display: block; }
+.web-kpi-strip span { color: #a0c9bd; font-size: 10px; }
+.web-kpi-strip strong { overflow: hidden; margin: 8px 0 4px; color: #f0fffa; font: 700 18px/1.25 system-ui, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.web-kpi-strip small { color: #72968d; font-size: 9px; }
+.web-finance-view { max-width: 1050px; }
+.web-finance-panel { overflow: hidden; }
+.web-debt-list, .web-invoice-list { display: grid; }
+.web-debt-row, .web-invoice-row { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 15px 4px; border-bottom: 1px solid var(--line); }
+.web-debt-row:last-child, .web-invoice-row:last-child { border-bottom: 0; }
+.web-debt-row strong, .web-debt-row small, .web-invoice-row strong, .web-invoice-row small { display: block; }
+.web-debt-row strong, .web-invoice-row strong { color: var(--text); font-size: 13px; }
+.web-debt-row small, .web-invoice-row small { margin-top: 4px; color: var(--muted-2); font-size: 10px; }
+.web-debt-row b, .web-invoice-row b { flex: 0 0 auto; font: 600 13px/1 system-ui, sans-serif; direction: rtl; }
+@media (max-width: 640px) {
+  .web-app .web-kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .web-app .web-kpi-strip article { padding: 13px 12px; border-radius: 13px; }
+  .web-app .web-kpi-strip strong { font-size: 15px; }
+  .web-app .web-debt-row, .web-app .web-invoice-row { padding: 13px 0; }
+  .web-app .web-debt-row strong, .web-app .web-invoice-row strong { font-size: 12px; }
+  .web-app .web-debt-row b, .web-app .web-invoice-row b { font-size: 11px; }
+}
