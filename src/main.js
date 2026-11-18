@@ -2,7 +2,7 @@ import './styles.css';
 import { aggregateDailyReport, aggregateRangeReport, openPrintWindow, renderDailyReportHtml, renderRangeReportHtml } from './reports.js';
 import './public-page.css';
 import { renderPublicOfficePage, renderPublicPageLoading, renderPublicPageUnavailable } from './public-page.js';
-import { bankBalance } from './banks.js';
+import { bankBalance, bankLedger, filterBankLedger } from './banks.js';
 import { renderBankView, renderPaymentMethodFields } from './bank-view.js';
 import { extractScannerFields, normalizeOcrText } from './scanner-text.js';
 import { renderDocuments, bindDocuments } from './documents.js';
@@ -65,6 +65,7 @@ let clientPasswordRequest = null;
 let adminPasswordRequests = [];
 let searchTerm = '';
 let categoryFilter = 'الكل';
+let activeCompanyGroup = '';
 let selectedSalesDate = todayKey();
 let selectedReportMonth = todayKey().slice(0, 7);
 let selectedBankAccountId = null;
@@ -982,8 +983,11 @@ function renderHome() {
     return matchesSearch && matchesCategory;
   });
   const categories = ['الكل', 'المفضلة', ...new Set(state.sites.map((site) => site.category))];
+  const companyGroups = [...new Set(state.sites.map((site) => site.category).filter(Boolean))];
+  const activeGroupSites = activeCompanyGroup ? state.sites.filter((site) => site.category === activeCompanyGroup) : [];
   return `<section class="home-view">
     <div class="toolbar"><div class="home-search-group"><label class="search-box">${icon('search', 18)}<input id="siteSearch" value="${escapeHtml(searchTerm)}" placeholder="ابحث عن موقع أو خدمة" aria-label="ابحث عن موقع أو خدمة؛ اضغط Enter للبحث في Google"></label><button class="secondary-btn google-search-btn" type="button" id="googleSearchButton">${icon('search', 16)} بحث Google</button></div><div class="category-chips">${categories.map((category) => `<button class="chip ${categoryFilter === category ? 'selected' : ''}" data-filter="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('')}</div></div>
+    <section class="company-groups-panel"><div class="section-heading"><div><p class="eyebrow">دليل الشركات</p><h2>مجموعات الشركات</h2></div><small>اضغط على المجموعة لعرض الشركات كأزرار سريعة بالأعلى</small></div><div class="company-group-list">${companyGroups.map((group) => `<button type="button" class="company-group-card ${activeCompanyGroup === group ? 'active' : ''}" data-company-group="${escapeAttribute(group)}"><span class="company-group-icon">${icon('users', 19)}</span><strong>${escapeHtml(group)}</strong><small>${state.sites.filter((site) => site.category === group).length} شركة</small></button>`).join('')}</div>${activeGroupSites.length ? `<nav class="company-company-tabs" aria-label="شركات ${escapeHtml(activeCompanyGroup)}"><span class="company-tabs-label">${escapeHtml(activeCompanyGroup)}</span>${activeGroupSites.map((site) => `<button type="button" class="company-company-tab" data-open-site="${escapeAttribute(site.id)}">${imageMarkup(site, 'tab-image')}<span>${escapeHtml(site.name)}</span></button>`).join('')}</nav>` : ''}</section>
     <div class="section-heading"><div><h2>المواقع المتاحة</h2></div></div>
     ${filteredSites.length ? `<div class="sites-grid">${filteredSites.map(renderSiteCard).join('')}</div>` : `<div class="empty-state"><div class="empty-icon">${icon('search', 28)}</div><h3>لا توجد نتائج</h3><p>جرّب كلمة بحث مختلفة أو أضف موقعًا جديدًا من الإعدادات.</p></div>`}
   </section>`;
@@ -1025,13 +1029,18 @@ function renderDebts() {
   for (const item of visibleDebtRecords) {
     const customer = customerForId(item.customerId);
     const person = customer?.name || item.person || 'بدون اسم';
-    const key = `${item.customerId || item.direction + ':' + person.trim().toLocaleLowerCase()}`;
-    if (!groups.has(key)) groups.set(key, { customerId: item.customerId || null, direction: item.direction, person, entries: [], total: 0 });
+    const key = `${item.customerId || person.trim().toLocaleLowerCase()}`;
+    if (!groups.has(key)) groups.set(key, { customerId: item.customerId || null, person, entries: [], receivable: 0, payable: 0 });
     const group = groups.get(key);
     group.entries.push(item);
-    group.total += Number(item.amount || 0);
+    if (item.direction === 'receivable') group.receivable += Number(item.amount || 0);
+    else group.payable += Number(item.amount || 0);
   }
-  const rows = [...groups.values()].map((group) => `<section class="debt-person-card"><header><div><span class="debt-direction ${group.direction}">${group.direction === 'receivable' ? 'مستحق لي' : 'مستحق له عليّ'}</span><h3>${escapeHtml(group.person)}</h3>${group.customerId ? '<small>مرتبط بملف العميل</small>' : ''}</div><strong class="${group.direction === 'receivable' ? 'amount-positive' : 'amount-negative'}">${formatMoney(group.total)}</strong></header><div class="debt-entry-list">${group.entries.map((entry) => `<div class="debt-entry"><div><span>${escapeHtml(entry.note || 'مبلغ مسجل')}</span><small>${escapeHtml(formatDateTime(entry.createdAt))}</small></div><strong>${formatMoney(entry.amount)}</strong><button class="icon-btn danger" type="button" data-delete-debt="${escapeHtml(entry.id)}" aria-label="حذف المبلغ">${icon('trash', 16)}</button></div>`).join('')}</div></section>`).join('');
+  const rows = [...groups.values()].map((group) => {
+    const balance = group.receivable - group.payable;
+    const direction = balance >= 0 ? 'receivable' : 'payable';
+    return `<section class="debt-person-card"><header><div><span class="debt-direction ${direction}">${balance >= 0 ? 'مستحق لي' : 'مستحق له عليّ'}</span><h3>${escapeHtml(group.person)}</h3>${group.customerId ? '<small>مرتبط بملف العميل</small>' : ''}</div><div class="debt-person-actions"><strong class="${direction === 'receivable' ? 'amount-positive' : 'amount-negative'}">${formatMoney(Math.abs(balance))}</strong><button class="secondary-btn" type="button" data-settle-debt="${escapeAttribute(group.customerId || '')}" data-settle-person="${escapeAttribute(group.person)}" data-settle-amount="${Math.abs(balance)}" data-settle-direction="${balance >= 0 ? 'payable' : 'receivable'}" ${balance === 0 ? 'disabled' : ''}>تصفية الحساب</button></div></header><div class="debt-entry-list">${group.entries.map((entry) => `<div class="debt-entry"><div><span>${entry.direction === 'receivable' ? 'إضافة له / مستحق لي' : 'سحب أو مدفوع له'} · ${escapeHtml(entry.note || 'حركة حساب')}</span><small>${escapeHtml(formatDateTime(entry.createdAt))}</small></div><strong class="${entry.direction === 'receivable' ? 'amount-positive' : 'amount-negative'}">${entry.direction === 'receivable' ? '+' : '−'}${formatMoney(entry.amount)}</strong><button class="icon-btn danger" type="button" data-delete-debt="${escapeAttribute(entry.id)}" aria-label="حذف المبلغ">${icon('trash', 16)}</button></div>`).join('')}</div></section>`;
+  }).join('');
   return `<section class="desktop-ledger-view"><div class="view-title-row"><div><p class="eyebrow">محفوظة على هذا الجهاز فقط</p><h1>المديونيات</h1><p class="page-subtitle">كل حركة يمكن ربطها بعميل لتظهر تلقائيًا في كشف حسابه.</p></div></div><div class="ledger-search-bar"><span>${icon('search', 17)}</span><input id="debtSearch" type="search" value="${escapeAttribute(debtSearchTerm)}" placeholder="ابحث باسم الشخص أو البيان أو العميل…" autocomplete="off"><span class="search-result-count">${groups.size} نتيجة</span></div><div class="summary-grid debt-summary"><article class="summary-card sales"><span class="summary-icon">${icon('wallet')}</span><div><small>إجمالي المبالغ المستحقة لي</small><strong>${formatMoney(receivable)}</strong></div></article><article class="summary-card expense"><span class="summary-icon">${icon('receipt')}</span><div><small>إجمالي المبالغ المستحقة عليّ</small><strong>${formatMoney(payable)}</strong></div></article><article class="summary-card net"><span class="summary-icon">${icon('sales')}</span><div><small>صافي الفرق</small><strong>${formatMoney(receivable - payable)}</strong></div></article></div><div class="debt-layout"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">تسجيل حركة</p><h2>إضافة مبلغ</h2></div></div><form id="debtForm" class="form-grid"><label class="full-span">ربط بعميل محفوظ<select name="customerId" id="debtCustomerSelect"><option value="">بدون ربط — كتابة اسم يدويًا</option>${customers.map((customer) => `<option value="${escapeAttribute(customer.id)}" ${selectedCustomerId === customer.id ? 'selected' : ''}>${escapeHtml(customer.name)}</option>`).join('')}</select></label><label>نوع المديونية<select name="direction"><option value="receivable">لي عند الشخص (مستحق لي)</option><option value="payable">له عندي (مبلغ عليّ للشخص)</option></select></label><label>اسم الشخص<input name="person" required maxlength="120" autocomplete="off" placeholder="اكتب الاسم"></label><label>المبلغ بالريال<input name="amount" type="number" min="0.01" max="100000000" step="0.01" required inputmode="decimal"></label><label>بيان المبلغ (اختياري)<input name="note" maxlength="160" placeholder="سبب المبلغ"></label><button class="primary-btn full-span" type="submit">${icon('plus', 17)} حفظ المبلغ وربطه بالعميل</button></form></section><section class="debt-people"><div class="panel-heading"><div><p class="eyebrow">كشف الأسماء</p><h2>الأرصدة المسجلة</h2></div><span class="record-count">${groups.size} شخص</span></div>${rows || '<div class="empty-state debt-empty"><div class="empty-icon">' + icon('wallet', 26) + '</div><h3>لا توجد نتائج</h3><p>جرّب اسمًا أو بيانًا مختلفًا.</p></div>'}</section></div></section>`;
 }
 const arabicOnes = ['', 'واحد', 'اثنان', 'ثلاثة', 'أربعة', 'خمسة', 'ستة', 'سبعة', 'ثمانية', 'تسعة'];
@@ -1183,22 +1192,33 @@ function bankReportTitle() {
   return `كشف الحساب البنكي${account ? ` — ${account.name}` : ''} · ${period}`;
 }
 function bankReportRows() {
-  const table = document.querySelector('.bank-ledger-table');
-  if (!table) return [];
-  return [...table.querySelectorAll('tr')].map((row) => [...row.children].map((cell) => String(cell.textContent || '').replace(/\s+/g, ' ').trim()));
+  const accounts = selectedBankAccountId ? state.bankAccounts.filter((account) => account.id === selectedBankAccountId) : state.bankAccounts;
+  const rows = [];
+  for (const account of accounts) {
+    const allEntries = bankLedger(account.id, state.bankAccounts, state.bankOperations, state.transactions, state.expenses);
+    const entries = filterBankLedger(allEntries, bankPeriodMode, bankPeriodMode === 'daily' ? bankPeriodDate : bankPeriodMonth).sort((a, b) => `${a.dateKey || ''}${a.createdAt || ''}`.localeCompare(`${b.dateKey || ''}${b.createdAt || ''}`));
+    let runningBalance = bankBalance(account, state.bankOperations, state.transactions, state.expenses) - entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+    for (const entry of entries) {
+      runningBalance += Number(entry.amount || 0);
+      rows.push([entry.dateKey || '—', account.name, entry.title || 'حركة بنكية', entry.description || '—', entry.amount >= 0 ? formatMoney(entry.amount) : '—', entry.amount < 0 ? formatMoney(Math.abs(entry.amount)) : '—', formatMoney(runningBalance)]);
+    }
+  }
+  return [['التاريخ', 'الحساب', 'العملية', 'البيان والتفاصيل', 'الإيداع', 'السحب', 'الرصيد المتبقي'], ...rows.sort((a, b) => `${a[0]}${a[1]}`.localeCompare(`${b[0]}${b[1]}`))];
 }
 function printBankReport() {
   const rows = bankReportRows();
   if (rows.length < 2) return showToast('لا توجد حركات بنكية في الفترة المحددة.', 'error');
   const table = `<table><thead><tr>${rows[0].map((cell) => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead><tbody>${rows.slice(1).map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-  const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><title>${escapeHtml(bankReportTitle())}</title><style>@page{size:A4 landscape;margin:12mm}body{font-family:Tahoma,Arial,sans-serif;color:#173b38;margin:0}header{border-bottom:3px solid #087f68;padding-bottom:14px;margin-bottom:22px}h1{font-size:24px;margin:0 0 7px;color:#08745e}p{color:#60746e}table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:9px 7px;border:1px solid #c9dad5;text-align:right}th{background:#eaf5f1;color:#175447}td:nth-last-child(1){font-weight:700}@media print{button{display:none}}</style><header><h1>${escapeHtml(state.officeName || 'Service Hub')}</h1><p>${escapeHtml(bankReportTitle())}</p></header>${table}<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))</script></html>`;
+  const totals = rows.slice(1).reduce((sum, row) => ({ deposits: sum.deposits + Number(String(row[4]).replace(/,/g, '') || 0), withdrawals: sum.withdrawals + Number(String(row[5]).replace(/,/g, '') || 0) }), { deposits: 0, withdrawals: 0 });
+  const html = `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><title>${escapeHtml(bankReportTitle())}</title><style>@page{size:A4 landscape;margin:10mm}*{box-sizing:border-box}body{font-family:Tahoma,Arial,sans-serif;color:#173b38;margin:0;background:#fff}header{border-bottom:4px solid #087f68;padding:12px 0 14px;margin-bottom:16px}h1{font-size:23px;margin:0 0 7px;color:#08745e}p{color:#60746e;margin:4px 0}.summary{display:flex;gap:10px;margin:0 0 16px}.metric{flex:1;padding:10px 12px;border-radius:8px;background:#eef8f4;border:1px solid #cfe7df}.metric strong{display:block;font-size:17px;color:#08745e;margin-top:4px}.metric.out strong{color:#b14c50}.metric.balance strong{color:#245ba8}table{width:100%;border-collapse:collapse;font-size:10px;page-break-inside:auto}tr{page-break-inside:avoid;page-break-after:auto}th,td{padding:7px 6px;border:1px solid #c9dad5;text-align:right}th{background:#087f68;color:#fff;font-weight:700}tbody tr:nth-child(even){background:#f3faf7}td:nth-child(5){color:#08745e;font-weight:700}td:nth-child(6){color:#b14c50;font-weight:700}td:nth-child(7){color:#245ba8;font-weight:700}@media print{button{display:none}}</style><header><h1>${escapeHtml(state.officeName || 'Service Hub')}</h1><p>${escapeHtml(bankReportTitle())}</p></header><section class="summary"><div class="metric"><span>إجمالي الإيداعات</span><strong>${formatMoney(totals.deposits)}</strong></div><div class="metric out"><span>إجمالي السحوبات</span><strong>${formatMoney(totals.withdrawals)}</strong></div><div class="metric balance"><span>عدد العمليات</span><strong>${rows.length - 1}</strong></div></section>${table}<script>window.addEventListener('load',()=>setTimeout(()=>window.print(),250))</script></html>`;
   if (!openPrintWindow(html)) showToast('تعذر فتح نافذة طباعة كشف البنك.', 'error');
 }
 function exportBankReportExcel() {
   const rows = bankReportRows();
   if (rows.length < 2) return showToast('لا توجد حركات بنكية في الفترة المحددة.', 'error');
-  const content = '\ufeff' + rows.map((row) => row.map((cell) => `"${cell.replace(/"/g, '""')}"`).join('\t')).join('\n');
-  const blob = new Blob([content], { type: 'application/vnd.ms-excel;charset=utf-16le' });
+  const excelRows = rows.slice(1).map((row) => `<tr>${row.map((cell, index) => `<td class="c${index}">${escapeHtml(cell)}</td>`).join('')}</tr>`).join('');
+  const content = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>body{font-family:Tahoma,Arial;color:#173b38}h1{color:#08745e}p{color:#60746e}.summary{background:#eaf5f1;padding:10px}.summary strong{color:#08745e}table{border-collapse:collapse;width:100%;font-size:11px}th,td{border:1px solid #a9c9bf;padding:8px;text-align:right}th{background:#087f68;color:#fff;font-weight:bold}.c4{background:#e9f8ef;color:#08745e;font-weight:bold}.c5{background:#fff0f0;color:#b14c50;font-weight:bold}.c6{background:#edf3ff;color:#245ba8;font-weight:bold}tr:nth-child(even) td{background-color:#f5fbf8}</style></head><body><h1>${escapeHtml(state.officeName || 'Service Hub')}</h1><p>${escapeHtml(bankReportTitle())}</p><div class="summary">تقرير شامل · عدد العمليات: <strong>${rows.length - 1}</strong></div><table><thead><tr>${rows[0].map((cell) => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead><tbody>${excelRows}</tbody></table></body></html>`;
+  const blob = new Blob([content], { type: 'application/vnd.ms-excel;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -1494,6 +1514,7 @@ function bindViewEvents() {
     saveDesktopCollection('debts', debtRecords);
     render();
   }));
+  document.querySelectorAll('[data-settle-debt]').forEach((button) => button.addEventListener('click', () => settleDebt(button)));
   document.querySelector('#invoiceForm')?.addEventListener('submit', handleInvoiceSubmit);
   document.querySelector('#invoiceSearch')?.addEventListener('input', (event) => { invoiceSearchTerm = event.currentTarget.value; render(); requestAnimationFrame(() => { const input = document.querySelector('#invoiceSearch'); input?.focus(); input?.setSelectionRange(invoiceSearchTerm.length, invoiceSearchTerm.length); }); });
   document.querySelector('#invoiceCustomerSelect')?.addEventListener('change', (event) => { const customer = customers.find((item) => item.id === event.target.value); const input = document.querySelector('#invoiceForm input[name="customerName"]'); if (input && customer) input.value = customer.name; });
@@ -1546,6 +1567,7 @@ function bindViewEvents() {
     if (site) { site.favorite = !site.favorite; saveState(); render(); }
   }));
   document.querySelectorAll('[data-filter]').forEach((button) => button.addEventListener('click', () => { categoryFilter = button.dataset.filter; render(); }));
+  document.querySelectorAll('[data-company-group]').forEach((button) => button.addEventListener('click', () => { activeCompanyGroup = button.dataset.companyGroup || ''; categoryFilter = activeCompanyGroup; render(); }));
   const search = document.querySelector('#siteSearch');
   if (search) {
     search.addEventListener('input', (event) => { searchTerm = event.target.value; render(); const next = document.querySelector('#siteSearch'); next?.focus(); next?.setSelectionRange(searchTerm.length, searchTerm.length); });
@@ -1621,6 +1643,19 @@ function handleDebtSubmit(event) {
   selectedCustomerId = customer?.id || selectedCustomerId;
   saveDesktopCollection('debts', debtRecords);
   showToast('تم حفظ المبلغ محليًا على هذا الجهاز.');
+  render();
+}
+
+function settleDebt(button) {
+  const customerId = String(button.dataset.settleDebt || '').trim() || null;
+  const person = String(button.dataset.settlePerson || '').trim();
+  const amount = Number(button.dataset.settleAmount || 0);
+  if (!person || !Number.isFinite(amount) || amount <= 0) return showToast('الحساب متعادل بالفعل.', 'error');
+  if (!window.confirm(`تسجيل تصفية حساب ${person} بمبلغ ${formatMoney(amount)}؟`)) return;
+  const linked = customerId ? customerForId(customerId) : null;
+  debtRecords.unshift({ id: uid('debt'), customerId, person: linked?.name || person, amount: Math.round(amount * 100) / 100, direction: button.dataset.settleDirection === 'receivable' ? 'receivable' : 'payable', note: 'تصفية الحساب', createdAt: new Date().toISOString() });
+  saveDesktopCollection('debts', debtRecords);
+  showToast('تم تسجيل تصفية الحساب.');
   render();
 }
 
