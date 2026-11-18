@@ -3,7 +3,7 @@ name: Windows installer
 on:
   push:
     tags:
-      - v0.1.31
+      - v0.1.32
   workflow_dispatch:
 
 permissions:
@@ -41,9 +41,9 @@ jobs:
       - name: Publish installer on GitHub Release
         shell: pwsh
         run: |
-          $installer = Get-Item "release/ServiceHub-Desktop-0.1.31-Setup.exe"
+          $installer = Get-Item "release/ServiceHub-Desktop-0.1.32-Setup.exe"
           $blockmap = Get-Item "$($installer.FullName).blockmap"
           $latest = Get-Item "release/latest.yml"
-          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.31" --notes "تقرير بنكي منسق للإيداعات والسحوبات والرصيد المتبقي مع طباعة A4 وحفظ PDF وتصدير Excel ملون، إضافة مجموعات الشركات وتابات الشركات، وإصلاح PDF والمديونيات." --latest --repo $env:GITHUB_REPOSITORY
+          gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $latest.FullName --title "Service Hub Desktop 0.1.32" --notes "كتالوج مركزي من Supabase لجميع بوابات الخدمات وشركات التأمين المرخصة، مع تقرير بنك منسق وطباعة A4 وExcel وPDF وإصلاحات PDF والمديونيات." --latest --repo $env:GITHUB_REPOSITORY
         env:
           GH_TOKEN: ${{ github.token }}

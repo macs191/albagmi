@@ -43,6 +43,7 @@ const initialState = {
 
 let state = loadState();
 let authSession = loadSession();
+let globalSiteCatalogLoaded = false;
 let debtRecords = loadDesktopCollection('debts');
 let invoices = loadDesktopCollection('invoices');
 let customers = loadDesktopCollection('customers');
@@ -134,6 +135,27 @@ async function apiRequest(path, { method = 'GET', body, token = authSession?.tok
     throw error;
   }
   return result;
+}
+
+async function loadGlobalSiteCatalog() {
+  if (globalSiteCatalogLoaded || (!API_BASE_URL && window.location.protocol === 'file:')) return;
+  try {
+    const result = await apiRequest('catalog/sites', { token: null, retryAuth: false });
+    const remoteSites = Array.isArray(result?.sites) ? result.sites : [];
+    if (!remoteSites.length) return;
+    const localSites = Array.isArray(state.sites) ? state.sites : [];
+    const localById = new Map(localSites.map((site) => [String(site.id), site]));
+    const normalized = remoteSites.filter((site) => site?.id && site?.name && site?.url).map((site) => ({
+      id: String(site.id), name: String(site.name), category: String(site.category || 'خدمات السعودية'),
+      url: String(site.url), image: String(site.image || ''), favorite: localById.get(String(site.id))?.favorite === true,
+    }));
+    const remoteIds = new Set(normalized.map((site) => site.id));
+    state.sites = [...normalized, ...localSites.filter((site) => !remoteIds.has(String(site.id)))];
+    localStorage.setItem(userStateCacheKey(), JSON.stringify(state));
+    globalSiteCatalogLoaded = true;
+  } catch (error) {
+    console.warn('Global site catalog unavailable', error);
+  }
 }
 
 function saveSession(session) {
@@ -885,6 +907,7 @@ async function restoreSession() {
           authSession.userId = remote.userId || authSession.userId;
           notepadText = loadNotepad();
           applyAccountState(remote);
+          await loadGlobalSiteCatalog();
           authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
           saveSession(authSession);
           await refreshClientPasswordRequest();
@@ -917,6 +940,7 @@ async function restoreSession() {
       authSession.userId = remote.userId || authSession.userId;
       notepadText = loadNotepad();
       applyAccountState(remote);
+      await loadGlobalSiteCatalog();
       authSession.account = { ...authSession.account, ...(remote.subscription || {}) };
       saveSession(authSession);
       await refreshClientPasswordRequest();

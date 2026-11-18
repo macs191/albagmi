@@ -3,6 +3,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, pbkdf2Sync, r
 const ACCOUNT_TABLE = 'albagmi_accounts';
 const USER_DATA_TABLE = 'albagmi_user_data';
 const VISITOR_TABLE = 'albagmi_site_visitors';
+const SITE_CATALOG_TABLE = 'albagmi_site_catalog';
 const PASSWORD_REQUEST_TABLE = 'albagmi_password_change_requests';
 const MAX_STATE_BYTES = 1024 * 1024;
 const USERNAME_RE = /^[a-z0-9._-]{3,40}$/;
@@ -574,6 +575,10 @@ export default async function handler(req, res) {
     if (segments.length === 1 && segments[0] === 'visit' && method === 'POST') {
       await recordSiteVisitor(parseBody(req));
       return json(res, 200, { ok: true });
+    }
+    if (segments.length === 2 && segments[0] === 'catalog' && segments[1] === 'sites' && method === 'GET') {
+      const { data } = await supabaseFetch(`/rest/v1/${SITE_CATALOG_TABLE}${query('id,name,category,url,image,sort_order', { order: 'sort_order.asc,name.asc', limit: '500' })}`, {}, true);
+      return json(res, 200, { sites: Array.isArray(data) ? data : [] });
     }
     if (segments.length === 2 && segments[0] === 'public-page' && method === 'GET') {
       return json(res, 200, await getPublicOfficePage(segments[1]));
